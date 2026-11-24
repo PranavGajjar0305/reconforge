@@ -1,0 +1,250 @@
+# ReconForge configuration (copy to config/reconforge.yaml, or pass with -c).
+# Every section is optional; values shown are defaults unless marked "example".
+# Only scan assets you own or are explicitly authorized in writing to assess.
+
+database:
+  url: sqlite:///data/reconforge.db          # PostgreSQL: postgresql+psycopg://user:pass@host/reconforge
+                                             # (pip install 'reconforge[postgres]'); env RECONFORGE_DATABASE_URL overrides
+
+storage:
+  data_dir: data
+  evidence_dir: data/evidence                # raw tool output, HTTP responses, certificates, screenshots
+  reports_dir: data/reports
+  backups_dir: data/backups
+  logs_dir: data/logs                        # one execution log per scan
+  retention_days: 365                        # `reconforge db retention` deletes older scans' raw data
+  keep_min_scans: 5                          # ...but always keeps the newest N scans per target
+
+network:
+  offline: false                             # true = skip modules that query public internet services
+  user_agent: "ReconForge/1.0 (authorized security assessment)"
+  rate_limit_per_second: 5                   # global cap on requests/connections to targets
+  max_concurrency: 10
+
+dns:
+  resolvers: []                              # [] = system resolvers; e.g. ["1.1.1.1", "9.9.9.9"] or ["127.0.0.1:5354"]
+  timeout: 3
+
+http:
+  timeout: 8
+  verify_tls: false                          # inspect services even with invalid certs (TLS issues are reported separately)
+  probe_ports: {http: [80], https: [443]}    # targets may override with `probe_ports`
+  max_body_bytes: 512000
+
+tls:
+  expiry_warning_days: 30
+
+ports:                                       # used only by the `port_scan` module (comprehensive profile)
+  tcp: [21, 22, 25, 80, 443, 3306, 5432, 6379, 8080, 8443, 9200]
+  timeout: 1.5
+
+crawler: {max_pages: 60, max_depth: 2, same_origin_only: true, respect_robots: true}
+screenshots: {chrome_path: auto, timeout: 25, window_size: "1280,800"}
+asn: {use_team_cymru: true, static_map: {}}  # static_map example: {"203.0.113.0/24": {asn: 64500, name: "Example", country: "ZZ"}}
+crtsh: {base_url: "https://crt.sh"}
+historical_urls: {base_url: "https://web.archive.org", limit: 2000}
+github: {api_base: "https://api.github.com", token_env: GITHUB_TOKEN, max_results: 50}
+
+# Passive intelligence providers (module passive_sources / ip_intelligence / domain_ownership).
+# Keys are read from the environment variables shown; providers without a required key are reported
+# as "unavailable" in the coverage report rather than silently ignored.
+providers:
+  include_private_ips: false
+  otx: {}                     # OTX_API_KEY optional
+  hackertarget: {}            # HACKERTARGET_API_KEY optional
+  urlscan: {}                 # URLSCAN_API_KEY optional
+  securitytrails: {}          # SECURITYTRAILS_API_KEY required
+  virustotal: {}              # VIRUSTOTAL_API_KEY required
+  shodan_dns: {}              # SHODAN_API_KEY required
+  chaos: {}                   # PDCP_API_KEY required
+  whoisxml: {}                # WHOISXML_API_KEY required
+  commoncrawl: {}             # no key
+  brave_search: {}            # BRAVE_SEARCH_API_KEY required
+  internetdb: {}              # Shodan InternetDB, no key (public IPs only)
+  rdap_ip: {}                 # no key
+  rdap_domain: {}             # no key
+  greynoise: {}               # GREYNOISE_API_KEY optional
+  ipinfo: {}                  # IPINFO_TOKEN optional
+  # any provider: {enabled: false} or {base_url: "..."}
+
+# Tool registry: see `reconforge tools`. Add tools without code changes; generic parsers extract
+# in-scope hostnames/URLs from their output.
+tool_registry: []
+#  - {name: mytool, category: subdomain_enum, phase: passive, profile: passive, maintenance: active,
+#     version_args: ["--version"], signature: mytool, command: ["-d", "{domain}"], parser: hostnames}
+tools_opt_in: []              # e.g. [cloud_enum] for tools whose registry profile is opt-in
+
+dns_bruteforce:                # comprehensive profile; requires authorization
+  # wordlist: /path/to/authorized-wordlist.txt   (default: reconforge/data/subdomains-small.txt)
+  max_words: 5000
+  permutations: true
+  max_permutations: 400
+  recursion_depth: 1
+  recursive_words: 15
+  concurrency: 10
+
+dns_security:
+  try_axfr: false              # opt-in zone-transfer check against authoritative servers
+  # dkim_selectors: [google, selector1, ...]
+
+content_discovery:             # comprehensive profile; dirb-style path discovery (GET only, soft-404 calibrated)
+  engine: builtin               # builtin | ffuf | feroxbuster | gobuster | dirsearch | dirb (falls back to builtin)
+  wordlist: builtin             # builtin | auto (SecLists/dirb common.txt if installed) | /path/to/wordlist.txt
+  max_words: 2000
+  extensions: []                # e.g. [php, asp, aspx, jsp, bak]
+  match_codes: [200, 204, 301, 302, 307, 308, 401, 403, 405, 500]
+  max_apps: 40
+  threads: 10
+  recursion_depth: 1
+
+vhost_discovery: {max_ips: 40, max_candidates: 250, extra_words: []}
+lookalike_domains: {max_candidates: 400, concurrency: 16}
+
+nuclei:
+  # By default the whole installed Nuclei template library runs (Nuclei auto-updates it before each scan).
+  # To restrict it, list template IDs or paths here; then ONLY those run.
+  reviewed_templates: []                     # e.g. ["http/technologies/tech-detect.yaml"]
+  # template_dir:                            # optional: a custom template directory
+  exclude_tags: [dos, intrusive, fuzz, fuzzing, brute-force, bruteforce, sqli, xss, rce, ssrf, lfi]
+                                             # aggressive/state-changing templates are skipped; set [] to run the entire library
+  severities: []                             # [] = all severities (info..critical)
+  rate_limit: 100                            # requests/second
+  concurrency: 25
+  request_timeout: 10
+  timeout_minutes: 360                       # overall cap on one Nuclei run
+  update_templates: true                     # pull the latest templates before scanning
+  headless: false                            # true also runs templates needing a headless browser
+
+cve_intel:
+  local_db: builtin                          # or a path to your own YAML with the same structure as data/cve_intel.yaml
+
+tools:                                       # optional; enabled: auto|true|false. Paths are auto-detected by
+                                             # ./install.sh / `reconforge tools --detect`; set path: /abs/path to override
+  subfinder: {enabled: auto}
+  dnsx: {enabled: auto}
+  httpx: {enabled: auto}        # must be ProjectDiscovery httpx (version banner is checked)
+  tlsx: {enabled: auto}
+  katana: {enabled: auto}
+  whatweb: {enabled: auto}
+  nuclei: {enabled: auto}
+  nmap: {enabled: auto}
+  naabu: {enabled: auto}
+  gau: {enabled: auto}
+
+# Per-module engine selection (built-in engines need no external binaries):
+#   dns_resolve: {engine: builtin|dnsx}   http_probe: {engine: builtin|httpx}   port_scan: {engine: builtin|nmap|naabu}
+#   tech_detect: {engine: builtin|whatweb}  crawler: {engine: builtin|katana}
+#   tls_inspect: {engine: builtin|sslscan}  js_analysis: {engine: builtin|retire}   (sslscan adds protocol/cipher checks; retire flags vulnerable JS libraries)
+
+source_reliability:                          # used for confidence scoring (noisy-OR across independent sources)
+  dns_resolve: 0.95
+  crtsh: 0.75
+  subfinder: 0.7
+  historical_urls: 0.5
+  default: 0.6
+
+incremental:
+  max_age_hours: 24                          # incremental scans re-probe only new hosts or ones older than this
+
+change_detection:
+  cert_expiry_days: 30
+
+# Profiles: override or add your own. Modules run in phase order regardless of list order.
+profiles:
+  standard:
+    modules: [domain_intel, crtsh, subfinder, github_intel, historical_urls, dns_resolve, asn_intel, http_probe,
+              tls_inspect, tech_detect, favicon_hash, waf_detect, crawler, well_known, screenshots, security_config,
+              cloud_intel, contact_intel, panel_detect, takeover_check, url_patterns, broken_links,
+              lookalike_domains, dork_builder]
+  # example custom profile
+  quick-web:
+    description: "DNS + HTTP + fingerprinting only"
+    active: true
+    modules: [crtsh, dns_resolve, http_probe, tls_inspect, tech_detect, security_config]
+
+plugins: []                                  # e.g. ["examples/plugins/security_txt.py", "mypkg.recon:MyModule"]
+
+notifications:
+  enabled: false                             # also enabled automatically by profiles with notify: true
+  min_significance: low                      # low|medium|high
+  categories: all                            # or a list, e.g. [new_subdomain, new_open_port, certificate_expiring]
+  dedup_hours: 168                           # identical changes are not re-sent within this window
+  report_base_url: "http://127.0.0.1:8765"   # used to build report/evidence links
+  email:
+    enabled: false
+    smtp_host: smtp.example.com
+    smtp_port: 587
+    starttls: true
+    username: reconforge@example.com
+    password_env: RECONFORGE_SMTP_PASSWORD
+    from: reconforge@example.com
+    to: [secops@example.com]
+  telegram: {enabled: false, bot_token_env: RECONFORGE_TELEGRAM_TOKEN, chat_id: "", api_base: "https://api.telegram.org"}
+  discord: {enabled: false, webhook_url_env: RECONFORGE_DISCORD_WEBHOOK}
+  slack: {enabled: false, webhook_url_env: RECONFORGE_SLACK_WEBHOOK}
+
+reports:
+  auto_generate: true
+  formats: [markdown, html, json, csv, pdf]
+  sections:                                  # set any to false to omit it from every format
+    executive_summary: true
+    scope: true
+    methodology: true
+    domains: true
+    dns: true
+    ip_asn: true
+    ports: true
+    http: true
+    technologies: true
+    endpoints: true
+    javascript: true
+    tls: true
+    cloud: true
+    security: true
+    cve: true
+    changes: true
+    graph: true
+    priorities: true
+    ai_analysis: true
+    coverage: true
+    evidence: true
+
+ai:
+  enabled: false
+  provider: anthropic                        # anthropic | heuristic (offline, rule-based)
+  model: claude-opus-5-5
+  effort: high
+  max_assets: 400                            # cap on records placed in the evidence pack
+
+api:
+  host: 127.0.0.1
+  port: 8765
+  token_env: RECONFORGE_API_TOKEN            # if this env var is set, the API requires Bearer auth
+
+targets:
+  - name: example-corp                       # example
+    root_domains: [example.com]
+    profile: standard
+    authorization:
+      confirmed: false                       # MUST be true (with a reference) before any active module runs
+      reference: "SOW-2026-001 / signed authorization letter"
+      contact: "security@example.com"
+    scope:
+      include: ["example.com", "*.example.com"]
+      exclude: ["*.corp.example.com"]
+      ip_allow: []                           # [] = public IPs only; list CIDRs to restrict active checks further
+      ip_exclude: []
+    # ports: [80, 443, 8443]                 # per-target override for port_scan
+    # probe_ports: {http: [80, 8080], https: [443, 8443]}
+    # module_options: {crawler: {max_pages: 20}}
+
+schedules:
+  - name: example-corp-weekly                # example
+    target: example-corp
+    frequency: weekly                        # once|hourly|daily|weekly|monthly|cron
+    day: mon
+    at: "03:00"                              # UTC
+    profile: continuous
+    incremental: true
+    enabled: false
+  # - {name: example-corp-cron, target: example-corp, frequency: cron, cron: "30 2 * * 1-5", profile: continuous}

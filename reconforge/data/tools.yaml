@@ -1,0 +1,217 @@
+# ReconForge tool registry.
+#
+# Every tool the platform knows about, whether or not it is executed. Fields:
+#   name, purpose, category, phase, install, version_args, signature (expected text in version output),
+#   input, output, api_env (env vars it needs/uses), profile (passive | active | opt-in | reference),
+#   maintenance (active | maintained | unmaintained | discontinued), command (argv template, executed
+#   only when profile allows it and the binary is present), parser (hostnames | urls | builtin), notes.
+#
+# profile meanings:
+#   passive   - queries third-party datasets only; may run in every profile
+#   active    - sends traffic to authorized target hosts; requires authorization
+#   opt-in    - never selected unless listed in config `tools_opt_in` (e.g. brute-force against third parties)
+#   reference - documented for operators; ReconForge provides a built-in equivalent or deliberately does not run it
+#
+# Placeholders in command: {domain} {wordlist} {resolvers} {dir} and {env:VAR}.
+
+- {name: subfinder, category: subdomain_enum, phase: passive, profile: passive, maintenance: active,
+   purpose: "Passive subdomain enumeration from many datasets", install: "go install github.com/projectdiscovery/subfinder/v2/cmd/subfinder@latest",
+   version_args: ["-version"], signature: "projectdiscovery|current version|engine version", input: domains, output: jsonl, api_env: [], module: subfinder}
+- {name: amass, category: subdomain_enum, phase: passive, profile: passive, maintenance: active,
+   purpose: "OWASP Amass passive enumeration", install: "go install github.com/owasp-amass/amass/v4/...@master",
+   version_args: ["-version"], signature: "", input: domain, output: text, api_env: [],
+   command: ["enum", "-passive", "-d", "{domain}", "-timeout", "10"], parser: hostnames}
+- {name: assetfinder, category: subdomain_enum, phase: passive, profile: passive, maintenance: maintained,
+   purpose: "Find related domains/subdomains from public sources", install: "go install github.com/tomnomnom/assetfinder@latest",
+   version_args: ["-h"], signature: "", input: domain, output: lines, api_env: [],
+   command: ["--subs-only", "{domain}"], parser: hostnames}
+- {name: findomain, category: subdomain_enum, phase: passive, profile: passive, maintenance: active,
+   purpose: "Fast passive subdomain enumeration", install: "https://github.com/Findomain/Findomain/releases",
+   version_args: ["--version"], signature: findomain, input: domain, output: lines, api_env: [],
+   command: ["-t", "{domain}", "-q"], parser: hostnames}
+- {name: chaos, category: subdomain_enum, phase: passive, profile: passive, maintenance: active,
+   purpose: "ProjectDiscovery Chaos dataset client", install: "go install github.com/projectdiscovery/chaos-client/cmd/chaos@latest",
+   version_args: ["-version"], signature: "projectdiscovery|current version|engine version", input: domain, output: lines, api_env: [PDCP_API_KEY],
+   command: ["-d", "{domain}", "-silent"], parser: hostnames}
+- {name: github-subdomains, category: subdomain_enum, phase: passive, profile: passive, maintenance: maintained,
+   purpose: "Subdomains referenced in GitHub code", install: "go install github.com/gwen001/github-subdomains@latest",
+   version_args: ["-h"], signature: "", input: domain, output: lines, api_env: [GITHUB_TOKEN],
+   command: ["-d", "{domain}", "-t", "{env:GITHUB_TOKEN}", "-raw", "-o", "/dev/stdout"], parser: hostnames}
+- {name: sublist3r, category: subdomain_enum, phase: passive, profile: reference, maintenance: unmaintained,
+   purpose: "Search-engine based enumeration (largely superseded)", install: "pip install sublist3r",
+   notes: "Not executed by default: unmaintained and scrapes search engines. Enable via tools_opt_in if required."}
+- {name: crobat, category: subdomain_enum, phase: passive, profile: reference, maintenance: discontinued,
+   purpose: "Rapid7 Sonar FDNS client", notes: "The Sonar dataset it queried is no longer publicly available."}
+- {name: shuffledns, category: dns_bruteforce, phase: resolve, profile: active, maintenance: active,
+   purpose: "massdns wrapper for brute-force/resolution with wildcard filtering", install: "go install github.com/projectdiscovery/shuffledns/cmd/shuffledns@latest",
+   version_args: ["-version"], signature: "projectdiscovery|current version|engine version", input: domain+wordlist, output: lines, api_env: [],
+   notes: "Selectable engine for dns_bruteforce (engine: shuffledns); requires massdns."}
+- {name: puredns, category: dns_bruteforce, phase: resolve, profile: active, maintenance: maintained,
+   purpose: "Brute-force and resolution with wildcard filtering", install: "go install github.com/d3mondev/puredns/v2@latest",
+   version_args: ["--version"], signature: puredns, input: domain+wordlist, output: lines,
+   command: ["bruteforce", "{wordlist}", "{domain}", "-r", "{resolvers}", "-q"], parser: hostnames,
+   notes: "Selectable engine for dns_bruteforce (engine: puredns)."}
+- {name: massdns, category: dns_bruteforce, phase: resolve, profile: reference, maintenance: maintained, purpose: "High-performance stub resolver used by shuffledns/puredns"}
+- {name: dnsx, category: dns_resolution, phase: resolve, profile: passive, maintenance: active, purpose: "Fast DNS resolution", version_args: ["-version"], signature: "projectdiscovery|current version|engine version", module: dns_resolve}
+- {name: dnsvalidator, category: dns_resolution, phase: resolve, profile: reference, maintenance: maintained, purpose: "Builds trusted resolver lists"}
+- {name: dig, category: dns_analysis, phase: resolve, profile: reference, maintenance: active, purpose: "DNS lookups (built-in equivalent: dnspython)"}
+- {name: delv, category: dns_analysis, phase: resolve, profile: reference, maintenance: active, purpose: "DNSSEC validation (built-in equivalent: dns_security)"}
+- {name: dnsrecon, category: dns_analysis, phase: resolve, profile: reference, maintenance: maintained, purpose: "DNS enumeration (built-in equivalents: domain_intel, dns_security)"}
+- {name: dnsenum, category: dns_analysis, phase: resolve, profile: reference, maintenance: unmaintained, purpose: "DNS enumeration"}
+- {name: fierce, category: dns_analysis, phase: resolve, profile: reference, maintenance: maintained, purpose: "DNS reconnaissance"}
+- {name: dnsviz, category: dns_analysis, phase: resolve, profile: reference, maintenance: active, purpose: "DNSSEC visualisation"}
+- {name: whois, category: ownership, phase: passive, profile: reference, maintenance: active, purpose: "Registration data (built-in: RDAP provider)"}
+- {name: waybackurls, category: url_collection, phase: passive, profile: passive, maintenance: maintained,
+   purpose: "Wayback Machine URLs", install: "go install github.com/tomnomnom/waybackurls@latest",
+   version_args: ["-h"], signature: "", input: domain, output: lines, command: ["{domain}"], parser: urls}
+- {name: gau, category: url_collection, phase: passive, profile: passive, maintenance: maintained, purpose: "URLs from Wayback/CommonCrawl/OTX/URLScan", version_args: ["--version"], signature: "", module: historical_urls}
+- {name: waymore, category: url_collection, phase: passive, profile: passive, maintenance: active,
+   purpose: "Archive URL and response collection", install: "pip install waymore",
+   version_args: ["--version"], signature: "", input: domain, output: lines,
+   command: ["-i", "{domain}", "-mode", "U", "-oU", "/dev/stdout"], parser: urls}
+- {name: katana, category: crawler, phase: content, profile: active, maintenance: active, purpose: "Web crawler", version_args: ["-version"], signature: "projectdiscovery|current version|engine version", module: crawler}
+- {name: gospider, category: crawler, phase: content, profile: reference, maintenance: unmaintained, purpose: "Web spider (alternative to built-in crawler/katana)"}
+- {name: hakrawler, category: crawler, phase: content, profile: reference, maintenance: maintained, purpose: "Web crawler (alternative)"}
+- {name: paramspider, category: url_collection, phase: passive, profile: reference, maintenance: maintained, purpose: "Parameter names from archives (built-in: parameter inventory)"}
+- {name: xnlinkfinder, category: js_analysis, phase: content, profile: reference, maintenance: active, purpose: "Link/parameter extraction (built-in: js_analysis)"}
+- {name: linkfinder, category: js_analysis, phase: content, profile: reference, maintenance: unmaintained, purpose: "JS endpoint extraction (built-in: js_analysis)"}
+- {name: retire, category: dependency, phase: content, profile: active, maintenance: active,
+   purpose: "Known-vulnerable JavaScript library detection over downloaded JS", install: "npm install -g retire",
+   version_args: ["--version"], signature: "", input: directory, output: json, module: js_analysis}
+- {name: gitleaks, category: secrets, phase: content, profile: active, maintenance: active,
+   purpose: "Secret pattern detection over downloaded public JS (redacted)", install: "brew install gitleaks",
+   version_args: ["version"], signature: "", input: directory, output: json, module: js_analysis}
+- {name: trufflehog, category: secrets, phase: content, profile: active, maintenance: active,
+   purpose: "Secret pattern detection, always with --no-verification", install: "brew install trufflehog",
+   version_args: ["--version"], signature: "", input: directory, output: jsonl, module: js_analysis}
+- {name: httpx, category: http, phase: http, profile: active, maintenance: active, purpose: "HTTP probing", version_args: ["-version"], signature: "projectdiscovery|current version|engine version", module: http_probe}
+- {name: whatweb, category: fingerprint, phase: fingerprint, profile: active, maintenance: maintained, purpose: "Web fingerprinting", version_args: ["--version"], signature: "whatweb", module: tech_detect}
+- {name: webanalyze, category: fingerprint, phase: fingerprint, profile: reference, maintenance: maintained, purpose: "Wappalyzer-rule fingerprinting (alternative)"}
+- {name: tlsx, category: tls, phase: fingerprint, profile: active, maintenance: active, purpose: "TLS data collection", version_args: ["-version"], signature: "projectdiscovery|current version|engine version", module: tls_inspect}
+- {name: sslscan, category: tls, phase: fingerprint, profile: active, maintenance: active,
+   purpose: "Protocol and cipher enumeration", install: "brew install sslscan", version_args: ["--version"], signature: "sslscan|openssl",
+   input: host:port, output: xml, module: tls_inspect}
+- {name: testssl.sh, category: tls, phase: fingerprint, profile: reference, maintenance: active, purpose: "Comprehensive TLS assessment (built-in: tls protocol probing)"}
+- {name: sslyze, category: tls, phase: fingerprint, profile: reference, maintenance: active, purpose: "TLS configuration analysis"}
+- {name: nmap, category: ports, phase: network, profile: active, maintenance: active, purpose: "Service discovery (-sT -sV --version-light; no intrusive NSE)", version_args: ["--version"], signature: "nmap", module: port_scan}
+- {name: naabu, category: ports, phase: network, profile: active, maintenance: active, purpose: "Port discovery", version_args: ["-version"], signature: "projectdiscovery|current version|engine version", module: port_scan}
+- {name: rustscan, category: ports, phase: network, profile: reference, maintenance: active, purpose: "Fast port discovery (use naabu/nmap engines instead)"}
+- {name: masscan, category: ports, phase: network, profile: reference, maintenance: maintained, purpose: "Internet-scale scanner", notes: "Deliberately not executed: rate model unsuitable for conservative scoped scanning."}
+- {name: zmap, category: ports, phase: network, profile: reference, maintenance: active, purpose: "Internet-scale scanner", notes: "Deliberately not executed."}
+- {name: unicornscan, category: ports, phase: network, profile: reference, maintenance: discontinued, purpose: "Legacy scanner"}
+- {name: nuclei, category: detection, phase: assessment, profile: active, maintenance: active, purpose: "Reviewed non-intrusive templates only", version_args: ["-version"], signature: "projectdiscovery|current version|engine version", module: nuclei}
+- {name: chrome, category: screenshots, phase: capture, profile: active, maintenance: active, purpose: "Headless screenshots", module: screenshots}
+- {name: gowitness, category: screenshots, phase: capture, profile: reference, maintenance: active, purpose: "Screenshot tool (alternative)"}
+- {name: eyewitness, category: screenshots, phase: capture, profile: reference, maintenance: maintained, purpose: "Screenshot tool (alternative)"}
+- {name: cloud_enum, category: cloud, phase: assessment, profile: opt-in, maintenance: maintained,
+   purpose: "Guesses bucket/app names at cloud providers", notes: "Sends name guesses to third-party providers; opt-in only."}
+- {name: s3scanner, category: cloud, phase: assessment, profile: opt-in, maintenance: maintained, purpose: "S3 bucket existence/permission checks", notes: "Opt-in only; ReconForge never lists or reads objects."}
+- {name: cloudlist, category: cloud, phase: passive, profile: reference, maintenance: active, purpose: "Asset inventory from YOUR cloud accounts (requires account credentials)"}
+- {name: scoutsuite, category: cloud, phase: assessment, profile: reference, maintenance: maintained, purpose: "Authenticated cloud configuration review (outside external recon scope)"}
+- {name: prowler, category: cloud, phase: assessment, profile: reference, maintenance: active, purpose: "Authenticated AWS/Azure/GCP review (outside external recon scope)"}
+- {name: uncover, category: exposure, phase: passive, profile: reference, maintenance: active, purpose: "Search-engine (Shodan/Censys/FOFA...) query client; built-in providers cover these"}
+- {name: arjun, category: api, phase: content, profile: reference, maintenance: maintained, purpose: "Parameter discovery by brute force", notes: "Not executed: sends many requests with guessed parameters."}
+- {name: kiterunner, category: api, phase: content, profile: reference, maintenance: unmaintained, purpose: "API route brute forcing", notes: "Not executed: route brute forcing."}
+- {name: semgrep, category: code, phase: passive, profile: reference, maintenance: active, purpose: "Static analysis of public source code"}
+- {name: osv-scanner, category: dependency, phase: assessment, profile: reference, maintenance: active, purpose: "Dependency advisory lookup (built-in: OSV provider)"}
+
+# --------------------------------------------------------------------- content discovery (dirb-style)
+- name: ffuf
+  category: content_discovery
+  phase: content
+  profile: active
+  maintenance: active
+  purpose: Fast web fuzzer used for directory/file discovery (engine of content_discovery)
+  install: go install github.com/ffuf/ffuf/v2@latest
+  version_args: ["-V"]
+  signature: "ffuf|version"
+  module: content_discovery
+- name: feroxbuster
+  category: content_discovery
+  phase: content
+  profile: active
+  maintenance: active
+  purpose: Recursive content discovery in Rust (engine of content_discovery)
+  install: brew install feroxbuster / cargo install feroxbuster
+  version_args: ["-V"]
+  signature: feroxbuster
+  module: content_discovery
+- name: gobuster
+  category: content_discovery
+  phase: content
+  profile: active
+  maintenance: active
+  purpose: Directory/file brute forcing (gobuster dir; engine of content_discovery)
+  install: go install github.com/OJ/gobuster/v3@latest
+  version_args: ["version"]
+  signature: "gobuster|^v?3\\.|[0-9]+\\.[0-9]+"
+  module: content_discovery
+- name: dirsearch
+  category: content_discovery
+  phase: content
+  profile: active
+  maintenance: active
+  purpose: Web path scanner (engine of content_discovery)
+  install: pipx install dirsearch
+  version_args: ["--version"]
+  signature: "dirsearch|v?0\\.[0-9]"
+  module: content_discovery
+- name: dirb
+  category: content_discovery
+  phase: content
+  profile: active
+  maintenance: legacy
+  purpose: Classic wordlist-based web content scanner (engine of content_discovery)
+  install: apt install dirb
+  version_args: []
+  signature: ""
+  module: content_discovery
+# --------------------------------------------------------------------- reference tools covered by built-ins
+- name: wafw00f
+  category: fingerprint
+  phase: fingerprint
+  profile: reference
+  maintenance: active
+  purpose: WAF fingerprinting
+  install: pipx install wafw00f
+  notes: "not executed: it sends attack-like payloads to trigger the WAF; the built-in waf_detect identifies WAFs passively"
+- name: dnstwist
+  category: brand
+  phase: passive
+  profile: reference
+  maintenance: active
+  purpose: Domain permutation / typosquat detection
+  install: pipx install dnstwist
+  notes: "built-in equivalent: lookalike_domains (DNS-only checks)"
+- name: gf
+  category: url_analysis
+  phase: assessment
+  profile: reference
+  maintenance: active
+  purpose: Grep patterns for interesting URL parameters
+  install: go install github.com/tomnomnom/gf@latest
+  notes: "built-in equivalent: url_patterns (gf-style xss/sqli/ssrf/redirect/lfi/rce/idor buckets)"
+- name: unfurl
+  category: url_analysis
+  phase: assessment
+  profile: reference
+  maintenance: active
+  purpose: Pull parts out of URLs
+  install: go install github.com/tomnomnom/unfurl@latest
+  notes: "built-in equivalent: url_patterns parameter inventory"
+- name: wpscan
+  category: cms
+  phase: assessment
+  profile: reference
+  maintenance: active
+  purpose: WordPress scanner
+  install: gem install wpscan
+  notes: "not executed (aggressive modes, API token); the built-in cms_intel fingerprints WordPress/Drupal/Joomla with GET requests only"
+- name: asnmap
+  category: network
+  phase: network
+  profile: reference
+  maintenance: active
+  purpose: ASN to CIDR mapping
+  install: go install github.com/projectdiscovery/asnmap/cmd/asnmap@latest
+  notes: "built-in equivalent: asn_prefixes (RIPEstat announced prefixes)"

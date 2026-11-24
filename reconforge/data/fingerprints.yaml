@@ -1,0 +1,78 @@
+# Built-in technology fingerprints.
+# Each entry: name, categories, and one or more matchers. A matcher is one of
+#   header: {name: regex}      (regex applied to the header value)
+#   body: regex                 (applied to the HTML/JS body)
+#   meta: {name: regex}         (<meta name=... content=...>)
+#   script: regex               (applied to <script src=...> URLs)
+#   cookie: regex               (applied to Set-Cookie cookie names)
+# A named group (?P<version>...) captures the version. `confidence` defaults to 0.8.
+- {name: nginx, categories: [web_server], header: {server: 'nginx(?:/(?P<version>[\d.]+))?'}}
+- {name: Apache HTTP Server, categories: [web_server], header: {server: 'Apache(?:/(?P<version>[\d.]+))?'}}
+- {name: Microsoft IIS, categories: [web_server], header: {server: 'Microsoft-IIS(?:/(?P<version>[\d.]+))?'}}
+- {name: LiteSpeed, categories: [web_server], header: {server: 'LiteSpeed'}}
+- {name: Caddy, categories: [web_server], header: {server: '^Caddy'}}
+- {name: Envoy, categories: [web_server], header: {server: 'envoy'}}
+- {name: OpenResty, categories: [web_server], header: {server: 'openresty(?:/(?P<version>[\d.]+))?'}}
+- {name: Gunicorn, categories: [web_server], header: {server: 'gunicorn(?:/(?P<version>[\d.]+))?'}}
+- {name: Uvicorn, categories: [web_server], header: {server: 'uvicorn'}}
+- {name: Kestrel, categories: [web_server], header: {server: 'Kestrel'}}
+- {name: Jetty, categories: [web_server], header: {server: 'Jetty(?:\((?P<version>[\d.]+))?'}}
+- {name: Apache Tomcat, categories: [web_server], body: 'Apache Tomcat/(?P<version>[\d.]+)'}
+- {name: PHP, categories: [language], header: {x-powered-by: 'PHP(?:/(?P<version>[\d.]+))?'}, cookie: '^PHPSESSID$'}
+- {name: ASP.NET, categories: [backend_framework], header: {x-powered-by: 'ASP\.NET', x-aspnet-version: '(?P<version>[\d.]+)'}, cookie: '^ASP\.NET_SessionId$'}
+- {name: Express, categories: [backend_framework], header: {x-powered-by: '^Express'}}
+- {name: Next.js, categories: [frontend_framework], header: {x-powered-by: 'Next\.js(?: (?P<version>[\d.]+))?'}, body: '/_next/static/'}
+- {name: Nuxt.js, categories: [frontend_framework], body: '/_nuxt/'}
+- {name: Django, categories: [backend_framework], cookie: '^csrftoken$', body: 'csrfmiddlewaretoken'}
+- {name: Flask, categories: [backend_framework], header: {server: 'Werkzeug(?:/(?P<version>[\d.]+))?'}}
+- {name: Ruby on Rails, categories: [backend_framework], header: {x-runtime: '.+'}, cookie: '^_.+_session$', confidence: 0.5}
+- {name: Laravel, categories: [backend_framework], cookie: '^laravel_session$'}
+- {name: Spring, categories: [backend_framework], body: 'Whitelabel Error Page'}
+- {name: Java, categories: [language], cookie: '^JSESSIONID$'}
+- {name: FastAPI, categories: [backend_framework], body: '"openapi".*"info"|<title>FastAPI', confidence: 0.4}
+- {name: WordPress, categories: [cms], meta: {generator: 'WordPress ?(?P<version>[\d.]+)?'}, body: '/wp-(?:content|includes)/'}
+- {name: Drupal, categories: [cms], meta: {generator: 'Drupal ?(?P<version>[\d.]+)?'}, header: {x-generator: 'Drupal'}}
+- {name: Joomla, categories: [cms], meta: {generator: 'Joomla'}}
+- {name: Ghost, categories: [cms], meta: {generator: 'Ghost ?(?P<version>[\d.]+)?'}}
+- {name: Shopify, categories: [cms, ecommerce], body: 'cdn\.shopify\.com'}
+- {name: React, categories: [frontend_framework], body: 'data-reactroot|react(?:\.production)?\.min\.js|__REACT_DEVTOOLS', script: 'react(?:-dom)?(?:\.production)?(?:\.min)?\.js'}
+- {name: Vue.js, categories: [frontend_framework], body: 'data-v-[0-9a-f]{8}|vue(?:\.runtime)?(?:\.min)?\.js', script: 'vue(?:@(?P<version>[\d.]+))?(?:\.min)?\.js'}
+- {name: Angular, categories: [frontend_framework], body: 'ng-version="(?P<version>[\d.]+)"'}
+- {name: AngularJS, categories: [frontend_framework], script: 'angular(?:\.min)?\.js', body: 'ng-app='}
+- {name: Svelte, categories: [frontend_framework], body: 'svelte-[a-z0-9]{6}'}
+- {name: jQuery, categories: [js_library], script: 'jquery[.-](?P<version>\d+\.\d+\.\d+)(?:\.min)?\.js', body: 'jQuery v(?P<version>\d+\.\d+\.\d+)'}
+- {name: Bootstrap, categories: [ui_framework], script: 'bootstrap(?:@|[.-])(?P<version>\d+\.\d+\.\d+)', body: 'bootstrap(?:\.min)?\.css'}
+- {name: Lodash, categories: [js_library], script: 'lodash(?:@|[.-])(?P<version>\d+\.\d+\.\d+)'}
+- {name: Google Analytics, categories: [analytics], body: 'googletagmanager\.com/gtag|google-analytics\.com/analytics\.js', script: 'googletagmanager\.com'}
+- {name: Google Tag Manager, categories: [analytics], body: 'googletagmanager\.com/gtm\.js'}
+- {name: Segment, categories: [analytics], body: 'cdn\.segment\.com'}
+- {name: Hotjar, categories: [analytics], body: 'static\.hotjar\.com'}
+- {name: Stripe, categories: [payment], script: 'js\.stripe\.com', body: 'js\.stripe\.com'}
+- {name: PayPal, categories: [payment], script: 'paypal\.com/sdk'}
+- {name: reCAPTCHA, categories: [security], script: 'google\.com/recaptcha'}
+- {name: Cloudflare, categories: [cdn, waf], header: {server: 'cloudflare', cf-ray: '.+'}}
+- {name: Amazon CloudFront, categories: [cdn, cloud], header: {x-amz-cf-id: '.+', via: 'CloudFront'}}
+- {name: Fastly, categories: [cdn], header: {x-served-by: 'cache-', x-fastly-request-id: '.+'}}
+- {name: Akamai, categories: [cdn], header: {x-akamai-transformed: '.+', server: 'AkamaiGHost'}}
+- {name: Sucuri, categories: [waf], header: {x-sucuri-id: '.+'}}
+- {name: Imperva, categories: [waf, cdn], header: {x-cdn: 'Incapsula'}}
+- {name: Amazon S3, categories: [cloud, storage], header: {server: 'AmazonS3'}}
+- {name: Amazon ELB, categories: [cloud], header: {server: 'awselb(?:/(?P<version>[\d.]+))?'}}
+- {name: Google Cloud, categories: [cloud], header: {server: '^(?:gws|Google Frontend|GSE)', via: 'google'}}
+- {name: Microsoft Azure, categories: [cloud], header: {x-azure-ref: '.+', x-ms-request-id: '.+'}}
+- {name: Heroku, categories: [cloud], header: {via: 'vegur'}}
+- {name: Vercel, categories: [cloud], header: {server: 'Vercel', x-vercel-id: '.+'}}
+- {name: Netlify, categories: [cloud], header: {server: 'Netlify'}}
+- {name: GraphQL, categories: [api], body: '(?:graphql|graphiql|apollo-server)', confidence: 0.5}
+- {name: Swagger UI, categories: [api_documentation], body: 'swagger-ui(?:-bundle)?(?:\.js|\.css)|id="swagger-ui"'}
+- {name: Redoc, categories: [api_documentation], body: '<redoc |redoc\.standalone\.js'}
+- {name: Elasticsearch, categories: [database], body: '"cluster_name"\s*:.*"tagline"\s*:\s*"You Know, for Search"', header: {x-elastic-product: 'Elasticsearch'}}
+- {name: Kibana, categories: [analytics, database], header: {kbn-name: '.+'}}
+- {name: MongoDB, categories: [database], body: 'It looks like you are trying to access MongoDB over HTTP'}
+- {name: phpMyAdmin, categories: [database, admin_panel], body: 'phpMyAdmin', meta: {"apple-itunes-app": 'phpmyadmin'}}
+- {name: Jenkins, categories: [ci_cd], header: {x-jenkins: '(?P<version>[\d.]+)'}}
+- {name: GitLab, categories: [ci_cd, scm], body: 'gon\.gitlab_url|content="GitLab"'}
+- {name: Grafana, categories: [analytics], body: 'grafana-app|window\.grafanaBootData'}
+- {name: Keycloak, categories: [identity], body: '/auth/resources/[^"]+/keycloak|kc-form-login'}
+- {name: Okta, categories: [identity], script: 'okta(?:cdn)?\.com'}
+- {name: Auth0, categories: [identity], script: 'cdn\.auth0\.com'}

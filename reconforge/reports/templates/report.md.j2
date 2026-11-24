@@ -1,0 +1,299 @@
+{%- set o = d.overview -%}
+# ReconForge Attack Surface Report — {{ d.target.name }}
+
+| Scan | Profile | Status | Started | Finished | Duration |
+|---|---|---|---|---|---|
+| `{{ d.scan.id }}` | {{ d.scan.profile }}{% if d.scan.incremental %} (incremental){% endif %} | {{ d.scan.status }} | {{ d.scan.started_at }} | {{ d.scan.finished_at }} | {{ d.scan.duration_seconds }} s |
+
+> Findings in this report are **observations** derived from collected evidence. Exposure is not the same as vulnerability;
+> version-based CVE correlations are unconfirmed until verified manually. Evidence IDs (`ev_…`) refer to stored raw data.
+{% if sections.executive_summary %}
+## Executive summary
+
+ReconForge observed **{{ o.domains }}** root domain(s), **{{ o.subdomains }}** in-scope subdomains
+({{ o.resolved_hosts }} resolving, {{ o.unresolved_hosts }} not resolving), **{{ o.live_web_services }}** web applications,
+**{{ o.open_ports }}** open ports on **{{ o.ip_addresses }}** IP address(es) in **{{ o.asns }}** ASN(s),
+**{{ o.technologies }}** technologies, **{{ o.api_endpoints }}** API-related endpoints and **{{ o.certificates }}** TLS certificates.
+
+Security observations: {% for k, v in o.findings_by_severity.items() %}{{ v }} {{ k }}{% if not loop.last %}, {% endif %}{% endfor %}.
+{% if d.scan.prev_scan_id %}Changes since previous scan `{{ d.scan.prev_scan_id }}`: **{{ o.changes }}**.{% else %}This is the baseline scan for this target.{% endif %}
+
+{% if d.priorities %}Top assets for manual review:
+
+| Tier | Score | Asset | Main reasons |
+|---|---|---|---|
+{% for p in d.priorities[:8] %}| {{ p.tier }} | {{ p.score }} | `{{ p.asset.key }}` | {{ p.factors | selectattr('points', 'gt', 0) | map(attribute='reason') | list | join('; ') | truncate(220) }} |
+{% endfor %}{% endif %}
+{% endif %}
+{% if sections.scope %}
+## Scope and target inventory
+
+- Root domains: {{ d.target.root_domains | join(', ') }}
+- Include patterns: {{ (d.target.scope.include or []) | join(', ') or 'root domains and subdomains' }}
+- Exclude patterns: {{ (d.target.scope.exclude or []) | join(', ') or 'none' }}
+- Allowed IP ranges for active checks: {{ (d.target.scope.ip_allow or []) | join(', ') or 'public addresses only' }}
+- Authorization reference: {{ d.target.authorization.reference or 'n/a' }}
+{% endif %}
+{% if sections.methodology %}
+## Reconnaissance methodology
+
+| Module | Status | Tool | Observations | Notes |
+|---|---|---|---|---|
+{% for r in d.module_runs %}| {{ r.module }} | {{ r.status }} | {{ r.tool }} | {{ r.observations }} | {{ (r.reason or '') | truncate(120) }} |
+{% endfor %}
+Tools executed: {{ d.scan.tools_executed | join(', ') }}
+{% endif %}
+{% if sections.domains %}
+## Domain and subdomain intelligence
+
+| Host | Resolves | IPs | CNAME | Discovered via | First seen | Confidence |
+|---|---|---|---|---|---|---|
+{% for h in d.hosts %}| {{ h.key }} | {{ 'yes' if h.resolved else 'no' }} | {{ h.ips | join(', ') }} | {{ h.cname | join(', ') }} | {{ h.discovered_via | join(', ') }} | {{ h.first_seen }} | {{ h.confidence }} |
+{% endfor %}{% endif %}
+{% if sections.dns %}
+## DNS information
+{% for h in d.hosts if h.dns %}
+- **{{ h.key }}**: {% for t, vals in h.dns.items() if vals %}{{ t }}=`{{ vals | join(' | ') | truncate(150) }}` {% endfor %}
+{%- endfor %}
+{% endif %}
+{% if sections.ip_asn %}
+## IP and ASN information
+
+| IP | ASN | Organisation | Provider | CDN | PTR | Hostnames |
+|---|---|---|---|---|---|---|
+{% for i in d.ips %}| {{ i.key }} | {{ i.asn or '' }} | {{ i.asn_name or '' }} | {{ i.provider or '' }} | {{ i.cdn or '' }} | {{ i.ptr or '' }} | {{ i.hostnames | join(', ') }} |
+{% endfor %}{% endif %}
+{% if sections.ports %}
+## Open ports and services
+
+| Service | Port | Protocol | Name | Product / version | Hosts | Evidence |
+|---|---|---|---|---|---|---|
+{% for s in d.services %}| {{ s.ip }} | {{ s.port }} | {{ s.proto }} | {{ s.service }} | {{ s.product or '' }} {{ s.version or '' }} | {{ (s.hosts or []) | join(', ') }} | `{{ s.evidence }}` |
+{% endfor %}{% endif %}
+{% if sections.http %}
+## HTTP/HTTPS findings
+
+| Web application | Status | Title | Server | CDN/WAF | Missing security headers |
+|---|---|---|---|---|---|
+{% for a in d.web_apps %}| {{ a.key }} | {{ a.status }} | {{ (a.title or '') | truncate(50) }} | {{ a.server or '' }} | {{ a.cdn or a.waf or '' }} | {{ a.missing_headers | join(', ') }} |
+{% endfor %}{% endif %}
+{% if sections.technologies %}
+## Technology inventory
+{% for group, rows in d.technologies.items() %}
+**{{ group }}**: {% for t in rows %}{{ t.name }}{% if t.versions %} ({{ t.versions | join(', ') }}){% endif %} on {{ t.apps | length }} app(s){% if not loop.last %}; {% endif %}{% endfor %}
+{% endfor %}{% endif %}
+{% if sections.endpoints %}
+## API and endpoint inventory
+
+API hosts: {{ d.api_hosts | join(', ') or 'none identified' }}
+
+| Endpoint | Kind | Documented methods | Observed methods | API version | Source |
+|---|---|---|---|---|---|
+{% for e in d.endpoints %}| `{{ e.key }}` | {{ e.kind }} | {{ e.methods_documented | join(',') }} | {{ e.methods_observed | join(',') }} | {{ e.api_version or '' }} | {{ e.discovered_via | join(', ') }} |
+{% endfor %}
+_Documented methods come from specifications, forms or JavaScript; ReconForge only sends GET/HEAD requests._
+{% endif %}
+{% if sections.javascript %}
+## JavaScript findings
+
+| File | Size | API references | Third parties | Libraries | Secret-like patterns |
+|---|---|---|---|---|---|
+{% for j in d.js_files %}| {{ j.key }} | {{ j.size or '' }} | {{ j.endpoints_found or 0 }} | {{ (j.third_parties or []) | join(', ') }} | {% for l in j.libraries or [] %}{{ l.name }} {{ l.version }} {% endfor %} | {{ j.secret_patterns or 0 }} |
+{% endfor %}{% endif %}
+{% if sections.tls %}
+## TLS information
+
+| Subject | Issuer | SANs | Expires | Days left | Trusted | Presented by |
+|---|---|---|---|---|---|---|
+{% for c in d.certificates %}| {{ c.subject_cn }} | {{ c.issuer_cn }} | {{ (c.sans or []) | join(', ') | truncate(80) }} | {{ c.not_after }} | {{ c.days_remaining }} | {{ c.trusted }} | {{ c.presented_by | join(', ') }} |
+{% endfor %}{% endif %}
+{% if sections.cloud %}
+## Cloud and third-party intelligence
+
+| Cloud reference | Provider | Service | Ownership |
+|---|---|---|---|
+{% for c in d.cloud %}| {{ c.attributes.name }} | {{ c.attributes.provider }} | {{ c.attributes.service }} | {{ c.attributes.ownership }} |
+{% endfor %}
+Third parties referenced by target assets (referenced ≠ owned by the target):
+{% for t in d.third_parties %}
+- {{ t.key }} — {{ t.attributes.service or t.attributes.category or '' }} (referenced by {{ t.referenced_by | join(', ') | truncate(120) }})
+{%- endfor %}
+{% endif %}
+{% if sections.security %}
+## Security configuration observations
+
+| Severity | Observation | Subject | Confidence | Evidence |
+|---|---|---|---|---|
+{% for f in d.findings %}| {{ f.attributes.severity }} | {{ f.attributes.title }} | {{ f.attributes.subject }} | {{ f.confidence }} | `{{ f.evidence }}` |
+{% endfor %}{% endif %}
+{% if sections.cve %}
+## CVE intelligence (version correlation)
+
+_These are correlations between advertised versions and public advisories. They are not confirmed vulnerabilities._
+
+| CVE | Product | Version | Asset | Evidence |
+|---|---|---|---|---|
+{% for f in d.cve_findings %}| {{ f.attributes.cves | join(', ') }} | {{ f.attributes.product }} | {{ f.attributes.version }} | {{ f.attributes.subject }} | `{{ f.evidence }}` |
+{% endfor %}{% endif %}
+{% if sections.changes %}
+## Historical changes
+{% if d.changes %}
+| Significance | Category | Change | Previous | Current |
+|---|---|---|---|---|
+{% for c in d.changes %}| {{ c.significance }} | {{ c.category }} | {{ c.summary | truncate(120) }} | `{{ c.previous | tojson | truncate(80) }}` | `{{ c.current | tojson | truncate(80) }}` |
+{% endfor %}{% else %}No changes recorded (baseline scan or no differences).{% endif %}
+{% endif %}
+{% if sections.graph %}
+## Asset relationship graph
+
+{{ graph_stats.nodes }} nodes, {{ graph_stats.edges }} edges ({{ graph_stats.confirmed_edges }} confirmed, {{ graph_stats.inferred_edges }} inferred).
+Exports: `graph.graphml`, `graph.dot`, `graph.json` in this report directory.
+
+Shared infrastructure: {% for s in graph_stats.shared_infrastructure[:10] %}{{ s.label }} ({{ s.type }}, {{ s.shared_by }} assets){% if not loop.last %}; {% endif %}{% endfor %}
+{% endif %}
+{% if sections.priorities %}
+## Asset prioritization
+
+_{{ d.priority_disclaimer }}_
+
+{% for p in d.priorities[:25] %}
+### {{ p.tier }} · {{ p.score }} · `{{ p.asset.key }}`
+{% for f in p.factors %}- {{ '%+.1f' | format(f.points) }} — {{ f.reason }}
+{% endfor %}{% endfor %}{% endif %}
+{% if sections.ai_analysis and d.ai %}
+## AI-assisted analysis ({{ d.ai.provider }} / {{ d.ai.model }})
+
+_Facts below cite evidence and asset IDs; hypotheses are explicitly labelled and must be verified. {{ d.ai.rejected | length }} AI statement(s) were rejected by the evidence guard._
+{% for sec, items in d.ai.result.items() if items is iterable and items is not string %}
+**{{ sec | replace('_', ' ') | title }}**
+{% for it in items %}- [{{ it.kind | default('fact') }}] {{ it.statement }} — refs: {{ it.refs | join(', ') }}
+{% endfor %}{% endfor %}{% endif %}
+{% if sections.coverage %}
+## Coverage gaps
+
+{% for g in d.coverage_gaps %}- **{{ g.module }}** ({{ g.status }}): {{ g.reason }}
+{% endfor %}{% endif %}
+{% if sections.coverage_quality and d.coverage %}
+## Reconnaissance coverage and quality
+
+**{{ d.coverage.statement }}**
+
+| Metric | Value |
+|---|---|
+{% for k, v in d.coverage.metrics.items() %}| {{ k | replace('_', ' ') }} | {{ v | join(', ') if v is iterable and v is not string else v }} |
+{% endfor %}
+| Phase | Status | Modules |
+|---|---|---|
+{% for ph, p in d.coverage.phases.items() %}| {{ ph }} | {{ p.status }} | {% for m, st in p.modules.items() %}{{ m }}={{ st }} {% endfor %} |
+{% endfor %}
+| Source | Kind | Status | Results | Note |
+|---|---|---|---|---|
+{% for n, s in d.coverage.sources.items() %}| {{ n }} | {{ s.kind }} | {{ s.status }} | {{ s.results if s.results is defined else '' }} | {{ (s.error or '') | truncate(80) }} |
+{% endfor %}{% endif %}
+{% if sections.source_comparison %}
+## Discovery source comparison
+
+| Source | Hosts | Unique to this source | Unique hosts |
+|---|---|---|---|
+{% for c in d.source_comparison %}| {{ c.source }} | {{ c.hosts }} | {{ c.unique }} | {{ c.unique_hosts | join(', ') | truncate(150) }} |
+{% endfor %}{% endif %}
+{% if sections.subdomain_lists %}
+## Resolved and unresolved hostnames
+
+Resolved ({{ d.resolved_hosts | length }}): {{ d.resolved_hosts | join(', ') }}
+
+Unresolved ({{ d.unresolved_hosts | length }}): {{ d.unresolved_hosts | join(', ') or 'none' }}
+
+Clusters by naming pattern: {% for k, v in d.subdomain_clusters.by_name_pattern.items() %}**{{ k }}**: {{ v | join(', ') }}; {% endfor %}
+Environment labels: {% for k, v in d.subdomain_clusters.by_environment.items() %}**{{ k }}**: {{ v | join(', ') }}; {% endfor %}
+Shared IPs: {% for k, v in d.subdomain_clusters.by_ip.items() %}{{ k }} → {{ v | length }} hosts; {% endfor %}
+{% endif %}
+{% if sections.dns_infrastructure %}
+## DNS and mail infrastructure
+{% for x in d.dns_infrastructure %}
+**{{ x.domain }}** — DNSSEC: {{ x.dnssec or 'n/a' }} · CAA: {{ x.caa | join(', ') or 'none' }} · DMARC policy: {{ x.dmarc_policy or 'none' }} · SPF lookups: {{ x.spf_dns_lookups }} · DKIM selectors found: {{ x.dkim_selectors_found | join(', ') or 'none' }} · MTA-STS: {{ x.mta_sts }} · TLS-RPT: {{ x.tls_rpt }} · BIMI: {{ x.bimi }}
+- Nameservers: {% for n in x.nameservers %}{{ n.host }} ({{ n.provider or 'unknown provider' }}, {{ n.ips | join('/') }}); {% endfor %}
+- MX: {{ x.mx | join(', ') }}
+{% if x.registration %}- Registration: registrar {{ x.registration.registrar }}, events {{ x.registration.events }}{% endif %}
+{% endfor %}
+CNAME chains: {% for c in d.cname_analysis %}{{ c.host }} → {{ c.chain | join(' → ') }}; {% endfor %}
+{% endif %}
+{% if sections.http_profiles %}
+## HTTP/HTTPS intelligence
+
+| Application | Redirect chain | HTTP/2 | HTTP/3 adv. | Compression | Cache-Control | HSTS | CSP | Default page |
+|---|---|---|---|---|---|---|---|---|
+{% for p in d.http_profiles %}| {{ p.app }} | {% for c in p.redirect_chain or [] %}{{ c.status }}{% if not loop.last %} → {% endif %}{% endfor %} | {{ p.http2 }} | {{ p.http3_advertised }} | {{ p.compression or '' }} | {{ (p.cache_control or '') | truncate(30) }} | {{ p.hsts.max_age if p.hsts else 'none' }} | {{ (p.csp.directives | length) if p.csp else 'none' }} | {{ p.default_page or '' }} |
+{% endfor %}{% endif %}
+{% if sections.vhosts %}
+## Virtual host and application inventory
+
+{% for ip, apps in d.vhost_inventory.applications_by_ip.items() %}- {{ ip }}: {{ apps | join(', ') }}
+{% endfor %}- Shared certificates: {% for c, apps in d.vhost_inventory.shared_certificates.items() %}{{ c }} → {{ apps | join(', ') }}; {% endfor %}
+- Hosts answering only with the server's default virtual host: {{ d.vhost_inventory.default_vhost_only_hosts | join(', ') or 'none' }}
+{% endif %}
+{% if sections.identity %}
+## Authentication and identity infrastructure
+
+_Inventory only — no authentication, enumeration or session testing was performed._
+{% for i in d.identity %}
+- **{{ i.app }}**: login {{ i.login_pages | join(', ') or '—' }}; registration {{ i.registration | join(', ') or '—' }}; password reset {{ i.password_reset | join(', ') or '—' }}; providers {{ i.providers | join(', ') or '—' }}; OIDC {{ i.oidc | map(attribute='issuer') | join(', ') or '—' }}; SAML {{ i.saml | map(attribute='entity_id') | join(', ') or '—' }}
+{%- endfor %}
+{% endif %}
+{% if sections.third_party_inventory %}
+## Third-party dependency inventory
+
+_Referenced services are not assumed to be owned by the target and were not scanned._
+{% for cat, items in d.third_party_inventory.items() %}
+- **{{ cat | replace('_', ' ') }}**: {% for t in items %}{{ t.domain }}{% if t.service %} ({{ t.service }}){% endif %}{% if not loop.last %}, {% endif %}{% endfor %}
+{%- endfor %}
+{% endif %}
+{% if sections.parameters %}
+## Parameter and endpoint-category inventory
+
+Endpoint categories (functional, not an indication of weakness): {% for k, v in d.endpoint_categories.items() %}{{ k }}={{ v }} {% endfor %}
+
+| Parameter | Endpoints | Examples |
+|---|---|---|
+{% for p in d.parameter_inventory[:100] %}| {{ p.name }} | {{ p.endpoints }} | {{ p.examples | join(', ') | truncate(120) }} |
+{% endfor %}{% endif %}
+{% if sections.historical_urls %}
+## Historical URL report ({{ d.historical_urls | length }})
+
+{% for e in d.historical_urls[:200] %}- `{{ e.key }}` ({{ e.discovered_via | join(', ') }}{% if e.attributes.archived_at %}, archived {{ e.attributes.archived_at }}{% endif %})
+{% endfor %}{% endif %}
+{% if sections.documents %}
+## Public documents ({{ d.documents | length }})
+
+_Metadata collected with HEAD requests; document contents were not downloaded._
+{% for e in d.documents %}- `{{ e.key }}` — {{ e.attributes.content_type }} · {{ e.attributes.size }} bytes · last modified {{ e.attributes.last_modified }}
+{% endfor %}{% endif %}
+{% if sections.secrets %}
+## Potential secret exposure (redacted)
+
+_Values are redacted. They were never used or validated against any service._
+
+| Location | Pattern | Detail | Confidence | Evidence |
+|---|---|---|---|---|
+{% for x in d.secret_exposures %}| {{ x.location }} | {{ x.pattern }} | {{ x.redacted | truncate(140) }} | {{ x.confidence }} | `{{ x.evidence }}` |
+{% endfor %}{% endif %}
+{% if sections.screenshot_groups %}
+## Visually similar applications
+
+{% for g in d.screenshot_groups %}- {{ g | join(', ') }}
+{% else %}No visually similar groups.
+{% endfor %}
+Near-blank renders (too little content to compare): {{ d.screenshot_near_blank | join(', ') or 'none' }}
+{% endif %}
+{% if sections.limitations %}
+## Assessment limitations
+
+{% for l in d.limitations %}- {{ l }}
+{% endfor %}{% endif %}
+{% if sections.evidence %}
+## Evidence references
+
+| Evidence | Kind | Module | Summary | SHA-256 |
+|---|---|---|---|---|
+{% for e in d.evidence.values() %}| `{{ e.id }}` | {{ e.kind }} | {{ e.module }} | {{ e.summary | truncate(90) }} | {{ (e.sha256 or '')[:16] }} |
+{% endfor %}{% endif %}

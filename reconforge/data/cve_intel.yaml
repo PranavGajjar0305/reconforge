@@ -1,0 +1,63 @@
+# Curated, deliberately small CVE / end-of-life sample used for offline version correlation.
+# It is NOT a complete vulnerability database. Extend it, or point cve_intel.local_db at your own
+# file with the same structure. Ranges: from (inclusive), before (exclusive), through (inclusive),
+# or an explicit `versions` list. Version strings are compared numerically (8.2p1 -> 8.2.1).
+meta:
+  name: reconforge-builtin-sample
+  updated: "2026-11-01"
+  note: "Sample entries for well-known, widely documented CVEs. Always confirm against the vendor advisory."
+products:
+  nginx:
+    aliases: [nginx web server]
+    cves:
+      - id: CVE-2021-23017
+        summary: "Off-by-one in the nginx DNS resolver may allow memory corruption when 'resolver' is configured."
+        affected: [{from: "0.6.18", through: "1.20.0"}]
+        references: ["https://nvd.nist.gov/vuln/detail/CVE-2021-23017", "https://nginx.org/en/security_advisories.html"]
+      - id: CVE-2019-20372
+        summary: "HTTP request smuggling via error_page in certain configurations."
+        affected: [{before: "1.17.7"}]
+        references: ["https://nvd.nist.gov/vuln/detail/CVE-2019-20372"]
+  Apache HTTP Server:
+    aliases: [apache, httpd, apache httpd]
+    cves:
+      - id: CVE-2021-41773
+        summary: "Path traversal and file disclosure in Apache HTTP Server 2.4.49 under non-default access configuration."
+        affected: [{versions: ["2.4.49"]}]
+        references: ["https://nvd.nist.gov/vuln/detail/CVE-2021-41773", "https://httpd.apache.org/security/vulnerabilities_24.html"]
+      - id: CVE-2021-42013
+        summary: "Incomplete fix for CVE-2021-41773 affecting 2.4.49 and 2.4.50."
+        affected: [{versions: ["2.4.49", "2.4.50"]}]
+        references: ["https://nvd.nist.gov/vuln/detail/CVE-2021-42013"]
+      - id: CVE-2023-25690
+        summary: "HTTP request splitting with some mod_proxy + RewriteRule/ProxyPassMatch configurations."
+        affected: [{from: "2.4.0", through: "2.4.55"}]
+        references: ["https://nvd.nist.gov/vuln/detail/CVE-2023-25690"]
+    eol: {before: "2.4", note: "Apache 2.2 reached end of life in 2017"}
+  jQuery:
+    cves:
+      - id: CVE-2019-11358
+        summary: "Prototype pollution in jQuery.extend(true, ...) before 3.4.0."
+        affected: [{before: "3.4.0"}]
+        references: ["https://nvd.nist.gov/vuln/detail/CVE-2019-11358"]
+      - id: CVE-2020-11022
+        summary: "Passing untrusted HTML to jQuery DOM manipulation methods may execute script (before 3.5.0)."
+        affected: [{from: "1.2", before: "3.5.0"}]
+        references: ["https://nvd.nist.gov/vuln/detail/CVE-2020-11022"]
+      - id: CVE-2020-11023
+        summary: "Passing HTML containing <option> elements to DOM manipulation methods may execute script (before 3.5.0)."
+        affected: [{from: "1.0.3", before: "3.5.0"}]
+        references: ["https://nvd.nist.gov/vuln/detail/CVE-2020-11023"]
+  OpenSSH:
+    cves:
+      - id: CVE-2023-38408
+        summary: "ssh-agent PKCS#11 provider loading issue exploitable via a forwarded agent (before 9.3p2)."
+        affected: [{before: "9.3.2"}]
+        references: ["https://nvd.nist.gov/vuln/detail/CVE-2023-38408"]
+      - id: CVE-2024-6387
+        summary: "Signal handler race condition in sshd ('regreSSHion') in 8.5p1 up to (not including) 9.8p1."
+        affected: [{from: "8.5.1", before: "9.8.1"}]
+        references: ["https://nvd.nist.gov/vuln/detail/CVE-2024-6387"]
+  PHP:
+    cves: []
+    eol: {before: "8.2", note: "PHP branches older than 8.2 no longer receive security support"}

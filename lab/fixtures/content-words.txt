@@ -1,0 +1,20 @@
+# lab content-discovery wordlist (fast)
+admin
+about
+blog
+contact
+careers
+search
+docs
+status
+.env
+.git/HEAD
+robots.txt
+sitemap.xml
+login
+api
+backup.zip
+wp-admin
+server-status
+files
+static

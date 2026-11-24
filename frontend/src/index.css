@@ -1,0 +1,217 @@
+@import "@fontsource/ibm-plex-sans/400.css";
+@import "@fontsource/ibm-plex-sans/500.css";
+@import "@fontsource/ibm-plex-sans/600.css";
+@import "@fontsource/chakra-petch/500.css";
+@import "@fontsource/chakra-petch/600.css";
+@import "@fontsource/chakra-petch/700.css";
+@import "@fontsource/jetbrains-mono/400.css";
+@import "@fontsource/jetbrains-mono/500.css";
+@import "tailwindcss";
+
+/*
+  ReconForge — tactical HUD.
+  slate  -> void / hull / deck / grid / wire / fog / chalk ink scale
+  indigo -> ion cyan (every interactive accent)
+  amber  -> live signal (running scans, radar) — kept separate so "live" never reads as "clickable"
+  Signature: targeting-reticle corner brackets on panels and chamfered controls. Everything else is quiet.
+*/
+@theme {
+  --font-sans: "IBM Plex Sans", ui-sans-serif, system-ui, sans-serif;
+  --font-display: "Chakra Petch", "IBM Plex Sans", sans-serif;
+  --font-mono: "JetBrains Mono", ui-monospace, monospace;
+
+  --color-slate-50: #f4f8ff;
+  --color-slate-100: #e2ecfa;   /* chalk */
+  --color-slate-200: #c9d7ec;
+  --color-slate-300: #a6b9d6;
+  --color-slate-400: #7f95b8;   /* fog */
+  --color-slate-500: #5d7397;
+  --color-slate-600: #3f5677;
+  --color-slate-700: #27405f;   /* wire */
+  --color-slate-800: #1a2a42;   /* grid */
+  --color-slate-900: #0b1422;   /* hull */
+  --color-slate-950: #050a12;   /* void */
+
+  --color-indigo-100: #d9fbff;
+  --color-indigo-200: #a8f4ff;
+  --color-indigo-300: #6cecff;
+  --color-indigo-400: #2ee6ff;  /* ion */
+  --color-indigo-500: #12c8e6;
+  --color-indigo-600: #0aa0bb;
+  --color-indigo-700: #077386;
+
+  --color-amber-200: #ffe2a6;
+  --color-amber-300: #ffcf6b;
+  --color-amber-400: #ffb020;   /* live signal */
+  --color-amber-500: #f09a00;
+
+  --color-emerald-300: #6ff0b8;
+  --color-emerald-400: #34e0a0;
+  --color-sky-300: #8fd0ff;
+  --color-sky-400: #58b8ff;
+
+  --color-ion: #2ee6ff;
+  --color-signal: #ffb020;
+  --color-trace: #2ee6ff44;
+}
+
+:root {
+  color-scheme: dark;
+  --ion: #2ee6ff;
+  --signal: #ffb020;
+  --hull: #0b1422;
+  --grid: #1a2a42;
+  --wire: #27405f;
+}
+html { font-size: 14px; }
+body {
+  @apply bg-slate-950 font-sans text-slate-200 antialiased;
+  font-feature-settings: "zero", "ss02";
+  background-image:
+    radial-gradient(1200px 520px at 70% -120px, rgba(46, 230, 255, 0.07), transparent 70%),
+    radial-gradient(900px 600px at -10% 110%, rgba(46, 230, 255, 0.035), transparent 70%),
+    linear-gradient(to right, rgba(127, 149, 184, 0.04) 1px, transparent 1px),
+    linear-gradient(to bottom, rgba(127, 149, 184, 0.04) 1px, transparent 1px);
+  background-size: auto, auto, 40px 40px, 40px 40px;
+  background-attachment: fixed;
+}
+/* faint CRT scanlines over everything; purely decorative, never intercepts input */
+body::after {
+  content: ""; position: fixed; inset: 0; pointer-events: none; z-index: 100;
+  background: repeating-linear-gradient(to bottom, rgba(255, 255, 255, 0.012) 0 1px, transparent 1px 3px);
+}
+::selection { background: #2ee6ff40; color: #fff; }
+:focus-visible { outline: 2px solid var(--ion); outline-offset: 2px; border-radius: 2px; }
+
+h1, h2, h3, .display { font-family: var(--font-display); letter-spacing: 0.01em; }
+.tabular { font-variant-numeric: tabular-nums; }
+
+/* ------------------------------------------------------------------ panels with reticle brackets */
+.hud, .card {
+  position: relative;
+  @apply rounded-[3px] border border-slate-800 bg-slate-900/75;
+  background-image: linear-gradient(180deg, rgba(46, 230, 255, 0.025), transparent 120px);
+}
+.card { @apply p-4; }
+.hud::before, .hud::after, .card::before, .card::after {
+  content: ""; position: absolute; width: 10px; height: 10px; pointer-events: none;
+  border-color: rgba(46, 230, 255, 0.55);
+}
+.hud::before, .card::before { top: -1px; left: -1px; border-top: 1px solid; border-left: 1px solid; }
+.hud::after, .card::after { bottom: -1px; right: -1px; border-bottom: 1px solid; border-right: 1px solid; }
+.hud-head { @apply flex min-h-11 items-center justify-between gap-3 border-b border-slate-800 px-4 py-2; }
+.panel-title { @apply font-[family-name:var(--font-display)] text-[15px] font-semibold tracking-wide text-slate-100; }
+.diode { display: inline-block; width: 6px; height: 6px; border-radius: 1px; background: var(--ion); box-shadow: 0 0 8px var(--ion); }
+.diode.live { background: var(--signal); box-shadow: 0 0 8px var(--signal); }
+.diode.off { background: var(--wire); box-shadow: none; }
+.diode.bad { background: #ff3d71; box-shadow: 0 0 8px #ff3d71; }
+.diode.ok { background: #34e0a0; box-shadow: 0 0 8px #34e0a066; }
+
+/* ------------------------------------------------------------------ tables */
+.tbl { @apply w-full text-left text-[13px]; border-collapse: separate; border-spacing: 0; }
+.tbl th {
+  @apply sticky top-0 z-10 border-b border-slate-700 bg-slate-900 px-3 py-2 font-mono text-[11px] font-medium text-slate-400;
+  letter-spacing: 0.02em;
+}
+.tbl td { @apply border-b border-slate-800/70 px-3 py-2 align-top; }
+.tbl tbody tr { transition: background-color 120ms; }
+.tbl tbody tr:hover td { background: rgba(46, 230, 255, 0.045); }
+.tbl tbody tr:hover td:first-child { box-shadow: inset 2px 0 0 var(--ion); }
+
+.pill { @apply mr-1 mb-1 inline-block rounded-[2px] border border-slate-700 bg-slate-800/50 px-1.5 py-0.5 font-mono text-[11px] text-slate-300; }
+
+/* ------------------------------------------------------------------ controls (chamfered) */
+.btn, .btn-primary, .btn-ghost {
+  --cut: 7px;
+  clip-path: polygon(0 0, calc(100% - var(--cut)) 0, 100% var(--cut), 100% 100%, var(--cut) 100%, 0 calc(100% - var(--cut)));
+}
+.btn {
+  @apply inline-flex items-center gap-1.5 border border-slate-700 bg-slate-900 px-3 py-1.5 text-[13px] text-slate-200 transition-colors;
+}
+.btn:hover:not(:disabled) { @apply border-indigo-400/60 bg-slate-800 text-slate-50; }
+.btn:disabled { @apply cursor-not-allowed opacity-40; }
+.btn-primary {
+  @apply inline-flex items-center gap-1.5 bg-indigo-400 px-3.5 py-1.5 text-[13px] font-semibold text-slate-950 transition-colors;
+  font-family: var(--font-display); letter-spacing: 0.03em;
+}
+.btn-primary:hover:not(:disabled) { @apply bg-indigo-300; box-shadow: 0 0 18px #2ee6ff55; }
+.btn-primary:disabled { @apply cursor-not-allowed opacity-40; }
+.btn-ghost { @apply inline-flex items-center gap-1.5 px-2 py-1 text-[12.5px] text-indigo-300 transition-colors; }
+.btn-ghost:hover { @apply bg-indigo-400/10 text-indigo-200; }
+
+.input {
+  @apply rounded-[2px] border border-slate-700 bg-slate-950/80 px-3 py-1.5 text-[13px] text-slate-100 placeholder-slate-500 outline-none transition-colors;
+}
+.input:focus { @apply border-indigo-400; box-shadow: 0 0 0 3px #2ee6ff1f; }
+select.input { @apply pr-8; }
+input[type="checkbox"], input[type="range"] { accent-color: var(--ion); }
+
+.mono { @apply font-mono text-[12px] break-all; }
+
+/* segmented tabs */
+.tabs { @apply inline-flex border border-slate-800 bg-slate-950/60 p-0.5; }
+.tabs > button { @apply px-3 py-1 text-[12.5px] text-slate-400 transition-colors; }
+.tabs > button:hover { @apply text-slate-100; }
+.tabs > button[aria-selected="true"] { @apply bg-slate-800 text-indigo-200; box-shadow: inset 0 -2px 0 var(--ion); }
+
+/* terminal surface */
+.term {
+  @apply overflow-auto rounded-[2px] border border-slate-800 bg-[#03070d] p-3 font-mono text-[12px] leading-[1.55] text-slate-300;
+  box-shadow: inset 0 0 40px rgba(46, 230, 255, 0.04);
+}
+.term .t-ts { @apply text-slate-600; }
+.term .t-mod { @apply text-indigo-300; }
+.term .t-err { color: #ff7a8f; }
+.term .t-warn { @apply text-amber-300; }
+.term .t-hit { @apply text-emerald-300; }
+
+/* readout numerals */
+.readout { font-family: var(--font-display); font-variant-numeric: tabular-nums; text-shadow: 0 0 18px rgba(46, 230, 255, 0.18); }
+
+/* radar sweep: the single animated identity element (live runs) */
+.radar {
+  position: relative; width: var(--size, 44px); height: var(--size, 44px); border-radius: 9999px;
+  background:
+    radial-gradient(circle, transparent 0 32%, rgba(46, 230, 255, 0.2) 33% 34%, transparent 35% 64%, rgba(46, 230, 255, 0.2) 65% 66%, transparent 67%),
+    #06101c;
+  box-shadow: inset 0 0 0 1px #27405f;
+  overflow: hidden;
+}
+.radar::before { content: ""; position: absolute; inset: 0; border-radius: inherit;
+  background: conic-gradient(from 0deg, transparent 0 300deg, #2ee6ff00 300deg, #2ee6ff99 358deg, #2ee6ff 360deg); }
+.radar.active::before { background: conic-gradient(from 0deg, transparent 0 300deg, #ffb02000 300deg, #ffb02099 358deg, #ffb020 360deg);
+  animation: sweep 2.4s linear infinite; }
+.radar.idle::before { opacity: 0.45; transform: rotate(40deg); }
+.radar::after { content: ""; position: absolute; left: 50%; top: 50%; width: 4px; height: 4px; margin: -2px; border-radius: 9999px; background: var(--ion); }
+.radar.active::after { background: var(--signal); }
+@keyframes sweep { to { transform: rotate(360deg); } }
+
+/* signal trace: segmented pipeline track */
+.trace { display: grid; grid-auto-flow: column; grid-auto-columns: 1fr; gap: 2px; height: 6px; }
+.trace > span { border-radius: 1px; background: #1a2a42; }
+.trace > span.done { background: #2ee6ffaa; }
+.trace > span.skip { background: #3f5677; }
+.trace > span.fail { background: #ff3d71; }
+.trace > span.run { background: #ffb020; box-shadow: 0 0 8px #ffb020; }
+
+/* header scan line while something runs */
+.scanbar { position: relative; overflow: hidden; }
+.scanbar::after { content: ""; position: absolute; left: -30%; bottom: 0; height: 1px; width: 30%;
+  background: linear-gradient(90deg, transparent, var(--signal), transparent); animation: scanbar 2.8s ease-in-out infinite; }
+@keyframes scanbar { to { left: 100%; } }
+
+/* popover menu */
+details.menu > summary { list-style: none; cursor: pointer; }
+details.menu > summary::-webkit-details-marker { display: none; }
+details.menu[open] > summary { @apply border-indigo-400/60 text-slate-50; }
+.menu-pop { @apply absolute right-0 z-40 mt-1.5 min-w-72 border border-slate-700 bg-slate-900 p-1.5;
+  box-shadow: 0 18px 40px rgba(0, 0, 0, 0.55), 0 0 0 1px rgba(46, 230, 255, 0.08); }
+
+@media (prefers-reduced-motion: reduce) {
+  .radar.active::before { animation: none; transform: rotate(60deg); }
+  .scanbar::after { animation: none; display: none; }
+  *, *::before, *::after { transition-duration: 0ms !important; animation-duration: 0ms !important; }
+}
+
+/* scrollbars that belong to the console */
+* { scrollbar-width: thin; scrollbar-color: #27405f transparent; }

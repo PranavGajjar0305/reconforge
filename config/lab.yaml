@@ -1,0 +1,106 @@
+# ReconForge configuration for the controlled lab (lab/lab_server.py).
+# Everything targets 127.0.0.1 and the reserved `.test` TLD; nothing leaves the machine.
+database:
+  url: sqlite:///data/lab/reconforge.db
+
+storage:
+  data_dir: data/lab
+  evidence_dir: data/lab/evidence
+  reports_dir: data/lab/reports
+  backups_dir: data/lab/backups
+  logs_dir: data/lab/logs
+  retention_days: 90
+
+network:
+  offline: true                 # public-internet modules skip unless pointed at a local emulator
+  rate_limit_per_second: 50
+  max_concurrency: 8
+
+dns:
+  resolvers: ["127.0.0.1:5354"]  # lab authoritative DNS
+  timeout: 2
+
+http:
+  probe_ports: {http: [8080], https: [8443]}
+
+ports:
+  tcp: [2222, 8080, 8443, 9200]
+  timeout: 1.0
+
+asn:
+  static_map:
+    "127.0.0.0/8": {asn: 64500, name: "ACME-LAB-NET (documentation ASN)", country: "ZZ"}
+
+crtsh: {base_url: "http://127.0.0.1:8099"}
+
+# Passive providers pointed at the lab emulators. Providers without an emulator (SecurityTrails,
+# VirusTotal, Shodan DNS, Chaos, WhoisXML, Brave, GreyNoise, IPinfo) are reported as unavailable.
+providers:
+  include_private_ips: true          # lab only: the lab's addresses are loopback
+  otx: {base_url: "http://127.0.0.1:8099/otx"}
+  hackertarget: {base_url: "http://127.0.0.1:8099/hackertarget"}
+  urlscan: {enabled: false}
+  commoncrawl: {base_url: "http://127.0.0.1:8099/commoncrawl"}
+  internetdb: {base_url: "http://127.0.0.1:8099/internetdb"}
+  rdap_ip: {base_url: "http://127.0.0.1:8099/rdap"}
+  rdap_domain: {base_url: "http://127.0.0.1:8099/rdap"}
+
+# Registry extension: a lab stand-in tool added purely through configuration.
+tool_registry:
+  - {name: lab-subenum, category: subdomain_enum, phase: passive, profile: passive, maintenance: active, local: true,
+     purpose: "Lab stand-in demonstrating registry-driven tool integration", version_args: ["--version"],
+     signature: lab-subenum, command: ["{domain}"], parser: hostnames}
+tools:
+  lab-subenum: {path: lab/bin/lab-subenum}
+
+dns_bruteforce: {max_permutations: 200, recursion_depth: 1, recursive_words: 5}
+historical_urls: {base_url: "http://127.0.0.1:8099"}
+github: {api_base: "http://127.0.0.1:8099"}
+
+screenshots: {timeout: 30}
+
+notifications:
+  enabled: true
+  dedup_hours: 168
+  report_base_url: "http://127.0.0.1:8765"
+  email:
+    enabled: true
+    smtp_host: 127.0.0.1
+    smtp_port: 2525
+    starttls: false
+    from: reconforge@lab.local
+    to: [secops@lab.local]
+  slack: {enabled: true, webhook_url: "http://127.0.0.1:8099/hooks/slack/T000/B000/lab"}
+  discord: {enabled: true, webhook_url: "http://127.0.0.1:8099/hooks/discord/000/lab"}
+  telegram: {enabled: true, api_base: "http://127.0.0.1:8099", bot_token_env: LAB_TELEGRAM_TOKEN, chat_id: "-1000000000001"}
+
+reports:
+  formats: [markdown, html, json, csv, pdf]
+
+ai:
+  enabled: false   # set true and export ANTHROPIC_API_KEY (or `ant auth login`) to enable Claude analysis
+
+targets:
+  - name: acme-lab
+    root_domains: [acme.test]
+    profile: comprehensive
+    authorization:
+      confirmed: true
+      reference: "LAB-AUTH-001 — self-hosted lab, owned by the operator"
+      contact: "operator@lab.local"
+    scope:
+      include: ["acme.test", "*.acme.test"]
+      exclude: []
+      ip_allow: ["127.0.0.0/8"]
+
+schedules:
+  - name: acme-lab-daily
+    target: acme-lab
+    frequency: daily
+    at: "02:30"
+    profile: continuous
+
+# keep the lab suite fast: the extended active modules use small budgets here
+content_discovery: {wordlist: lab/fixtures/content-words.txt, max_apps: 8, threads: 8}
+vhost_discovery: {max_candidates: 60}
+lookalike_domains: {max_candidates: 60}

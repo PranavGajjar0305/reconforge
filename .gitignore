@@ -1,0 +1,75 @@
+# =====================================================================================
+# ReconForge — never commit scan data.
+# Everything a scan produces (database, evidence, reports, logs, output files, screenshots,
+# API keys) lives under data/ (or ~/.reconforge without a config file) and is ignored here.
+# =====================================================================================
+
+# --- scan data and secrets -------------------------------------------------------------
+/data/
+/lab/data/
+*.db
+*.db-shm
+*.db-wal
+*.db-journal
+*.sqlite
+*.sqlite3
+settings.json
+tool-paths.yaml
+scheduler.lock
+# (evidence, reports, output files, screenshots and tool work dirs all live under data/)
+*.log
+*.log.*
+nohup.out
+
+# local config (targets, scope, webhooks, tokens); commit config/reconforge.example.yaml instead
+/config/reconforge.yaml
+/config/*.local.yaml
+/config/local/
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.p12
+*.pfx
+
+# files downloaded from the dashboard into the repo by mistake
+/reconforge-*.csv
+/reconforge-*.json
+/reconforge-*.md
+/reconforge-*.pdf
+/reconforge-*.html
+/reconforge-*.zip
+/reconforge-*.txt
+/reconforge-*.log
+/*.zip
+
+# lab runtime (generated CA/certs, sinks, databases of test scans)
+/lab/runtime/
+
+# state files some external tools drop in their working directory
+ferox-*.state
+resume.cfg
+/reports/
+
+# --- build, editor and OS noise ---------------------------------------------------------
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+.pytest_cache/
+.coverage
+htmlcov/
+.mypy_cache/
+.ruff_cache/
+frontend/node_modules/
+frontend/.vite/
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.swp
+.claude/

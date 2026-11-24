@@ -1,0 +1,125 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><title>ReconForge — {{ d.target.name }} — {{ d.scan.id }}</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>
+:root{--bg:#0b1020;--panel:#ffffff;--ink:#0f172a;--muted:#64748b;--line:#e2e8f0;--accent:#4f46e5}
+*{box-sizing:border-box}body{margin:0;font:14px/1.5 -apple-system,Segoe UI,Helvetica,Arial,sans-serif;color:var(--ink);background:#f1f5f9}
+header{background:linear-gradient(120deg,#111827,#312e81);color:#fff;padding:28px 40px}header h1{margin:0 0 6px;font-size:24px}
+header .meta{opacity:.85;font-size:13px}main{max-width:1280px;margin:0 auto;padding:24px 32px}
+nav{display:flex;flex-wrap:wrap;gap:6px;margin:0 0 18px}nav a{font-size:12px;padding:4px 10px;border-radius:999px;background:#e0e7ff;color:#3730a3;text-decoration:none}
+section{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:18px 22px;margin:0 0 18px}
+h2{font-size:18px;margin:0 0 12px}h3{font-size:14px;margin:14px 0 6px}
+.cards{display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:10px}
+.card{border:1px solid var(--line);border-radius:10px;padding:10px 12px;background:#f8fafc}.card b{display:block;font-size:22px}.card span{color:var(--muted);font-size:12px}
+table{width:100%;border-collapse:collapse;font-size:12.5px}th,td{text-align:left;padding:6px 8px;border-bottom:1px solid var(--line);vertical-align:top}
+th{background:#f8fafc;font-weight:600;position:sticky;top:0}td code,.mono{font-family:ui-monospace,Menlo,monospace;font-size:11.5px;word-break:break-all}
+.sev{display:inline-block;padding:1px 8px;border-radius:999px;font-size:11px;font-weight:600}
+.sev-critical,.sev-high{background:#fee2e2;color:#991b1b}.sev-medium{background:#ffedd5;color:#9a3412}.sev-low{background:#fef9c3;color:#854d0e}.sev-info{background:#e0f2fe;color:#075985}
+.tier{font-weight:700}.P1{color:#b91c1c}.P2{color:#c2410c}.P3{color:#a16207}.P4{color:#475569}
+.note{background:#eef2ff;border-left:4px solid var(--accent);padding:8px 12px;border-radius:6px;color:#312e81;font-size:13px}
+.muted{color:var(--muted)}.pill{display:inline-block;background:#f1f5f9;border:1px solid var(--line);border-radius:999px;padding:0 7px;margin:1px;font-size:11px}
+.hyp{background:#fff7ed;border-left:3px solid #f97316;padding:4px 8px}.fact{background:#f0fdf4;border-left:3px solid #16a34a;padding:4px 8px}
+</style></head><body>
+<header><h1>Attack Surface Report — {{ d.target.name }}</h1>
+<div class="meta">Scan <span class="mono">{{ d.scan.id }}</span> · profile {{ d.scan.profile }}{% if d.scan.incremental %} (incremental){% endif %} · {{ d.scan.status }} · {{ d.scan.started_at }} → {{ d.scan.finished_at }} ({{ d.scan.duration_seconds }} s)</div></header>
+<main>
+<p class="note">Findings are observations backed by stored evidence (<span class="mono">ev_…</span> IDs). Exposure is not vulnerability; version-based CVE correlations are unconfirmed until verified manually.</p>
+<nav>{% for key, label in toc %}{% if sections[key] %}<a href="#{{ key }}">{{ label }}</a>{% endif %}{% endfor %}</nav>
+{% set o = d.overview %}
+{% if sections.executive_summary %}<section id="executive_summary"><h2>Executive summary</h2>
+<div class="cards">
+{% for label, val in [("Root domains", o.domains), ("Subdomains", o.subdomains), ("Resolved hosts", o.resolved_hosts), ("Unresolved", o.unresolved_hosts), ("Web services", o.live_web_services), ("IP addresses", o.ip_addresses), ("ASNs", o.asns), ("Open ports", o.open_ports), ("Technologies", o.technologies), ("API endpoints", o.api_endpoints), ("TLS certificates", o.certificates), ("Security observations", o.security_observations), ("CVE correlations", o.cve_correlations), ("Changes", o.changes)] %}
+<div class="card"><b>{{ val }}</b><span>{{ label }}</span></div>{% endfor %}</div>
+<h3>Observations by severity</h3><p>{% for k, v in o.findings_by_severity.items() %}<span class="sev sev-{{ k }}">{{ k }}: {{ v }}</span> {% endfor %}</p>
+{% if d.priorities %}<h3>Top assets for manual review</h3><table><tr><th>Tier</th><th>Score</th><th>Asset</th><th>Reasons</th></tr>
+{% for p in d.priorities[:8] %}<tr><td class="tier {{ p.tier }}">{{ p.tier }}</td><td>{{ p.score }}</td><td class="mono">{{ p.asset.key }}</td><td>{% for f in p.factors if f.points > 0 %}<div>{{ f.reason }}</div>{% endfor %}</td></tr>{% endfor %}</table>{% endif %}
+{% if d.changes %}<h3>Key changes</h3><ul>{% for c in d.changes[:8] %}<li><span class="sev sev-{{ 'high' if c.significance=='high' else 'medium' if c.significance=='medium' else 'info' }}">{{ c.significance }}</span> {{ c.summary }}</li>{% endfor %}</ul>{% endif %}
+</section>{% endif %}
+{% if sections.scope %}<section id="scope"><h2>Scope and target inventory</h2><table>
+<tr><th>Root domains</th><td>{{ d.target.root_domains | join(', ') }}</td></tr>
+<tr><th>Include</th><td class="mono">{{ (d.target.scope.include or []) | join(', ') or 'root domains and subdomains' }}</td></tr>
+<tr><th>Exclude</th><td class="mono">{{ (d.target.scope.exclude or []) | join(', ') or 'none' }}</td></tr>
+<tr><th>Active-check IP ranges</th><td class="mono">{{ (d.target.scope.ip_allow or []) | join(', ') or 'public addresses only' }}</td></tr>
+<tr><th>Authorization</th><td>{{ d.target.authorization.reference or 'n/a' }}</td></tr></table></section>{% endif %}
+{% if sections.methodology %}<section id="methodology"><h2>Reconnaissance methodology</h2><table><tr><th>Module</th><th>Status</th><th>Tool</th><th>Observations</th><th>Notes</th></tr>
+{% for r in d.module_runs %}<tr><td>{{ r.module }}</td><td>{{ r.status }}</td><td>{{ r.tool }}</td><td>{{ r.observations }}</td><td class="muted">{{ r.reason or '' }}</td></tr>{% endfor %}</table>
+<p class="muted">Tools executed: {{ d.scan.tools_executed | join(', ') }}</p></section>{% endif %}
+{% if sections.domains %}<section id="domains"><h2>Domain and subdomain intelligence</h2><table><tr><th>Host</th><th>Resolves</th><th>IPs</th><th>CNAME</th><th>Discovered via</th><th>Scope</th><th>First seen</th><th>Conf.</th></tr>
+{% for h in d.hosts %}<tr><td class="mono">{{ h.key }}</td><td>{{ '✔' if h.resolved else '✘' }}</td><td class="mono">{{ h.ips | join(', ') }}</td><td class="mono">{{ h.cname | join(', ') }}</td><td>{% for s in h.discovered_via %}<span class="pill">{{ s }}</span>{% endfor %}</td><td>{{ h.scope }}</td><td>{{ h.first_seen }}</td><td>{{ h.confidence }}</td></tr>{% endfor %}</table></section>{% endif %}
+{% if sections.dns %}<section id="dns"><h2>DNS information</h2><table><tr><th>Host</th><th>Records</th></tr>
+{% for h in d.hosts if h.dns %}<tr><td class="mono">{{ h.key }}</td><td class="mono">{% for t, vals in h.dns.items() if vals %}<div><b>{{ t }}</b> {{ vals | join(' | ') }}</div>{% endfor %}</td></tr>{% endfor %}</table></section>{% endif %}
+{% if sections.ip_asn %}<section id="ip_asn"><h2>IP and ASN information</h2><table><tr><th>IP</th><th>ASN</th><th>Organisation</th><th>Provider</th><th>CDN</th><th>PTR</th><th>Hostnames</th><th>Services</th></tr>
+{% for i in d.ips %}<tr><td class="mono">{{ i.key }}</td><td>{{ i.asn or '' }}</td><td>{{ i.asn_name or '' }}</td><td>{{ i.provider or '' }}</td><td>{{ i.cdn or '' }}</td><td class="mono">{{ i.ptr or '' }}</td><td class="mono">{{ i.hostnames | join(', ') }}</td><td class="mono">{{ i.services | join(', ') }}</td></tr>{% endfor %}</table></section>{% endif %}
+{% if sections.ports %}<section id="ports"><h2>Open ports and services</h2><table><tr><th>IP</th><th>Port</th><th>Proto</th><th>Service</th><th>Product / version</th><th>Banner</th><th>Evidence</th></tr>
+{% for s in d.services %}<tr><td class="mono">{{ s.ip }}</td><td>{{ s.port }}</td><td>{{ s.proto }}</td><td>{{ s.service }}</td><td>{{ s.product or '' }} {{ s.version or '' }}</td><td class="mono">{{ (s.banner or '')[:80] }}</td><td class="mono">{{ s.evidence }}</td></tr>{% endfor %}</table></section>{% endif %}
+{% if sections.http %}<section id="http"><h2>HTTP/HTTPS findings</h2><table><tr><th>Application</th><th>Status</th><th>Title</th><th>Server</th><th>Technologies</th><th>CDN/WAF</th><th>Missing headers</th></tr>
+{% for a in d.web_apps %}<tr><td class="mono">{{ a.key }}</td><td>{{ a.status }}</td><td>{{ a.title or '' }}</td><td>{{ a.server or '' }}</td><td>{% for n, v in a.technologies.items() %}<span class="pill">{{ n }}{% if v %} {{ v }}{% endif %}</span>{% endfor %}</td><td>{{ a.cdn or a.waf or '' }}</td><td class="muted">{{ a.missing_headers | join(', ') }}</td></tr>{% endfor %}</table></section>{% endif %}
+{% if sections.technologies %}<section id="technologies"><h2>Technology inventory</h2><table><tr><th>Category</th><th>Technologies</th></tr>
+{% for group, rows in d.technologies.items() %}<tr><td>{{ group }}</td><td>{% for t in rows %}<span class="pill">{{ t.name }}{% if t.versions %} {{ t.versions | join('/') }}{% endif %} · {{ t.apps | length }} app(s)</span>{% endfor %}</td></tr>{% endfor %}</table></section>{% endif %}
+{% if sections.endpoints %}<section id="endpoints"><h2>API and endpoint inventory</h2><p>API hosts: {% for h in d.api_hosts %}<span class="pill">{{ h }}</span>{% endfor %}</p>
+<table><tr><th>Endpoint</th><th>Kind</th><th>Documented</th><th>Observed</th><th>Version</th><th>Source</th></tr>
+{% for e in d.endpoints %}<tr><td class="mono">{{ e.key }}</td><td>{{ e.kind }}</td><td>{{ e.methods_documented | join(', ') }}</td><td>{{ e.methods_observed | join(', ') }}</td><td>{{ e.api_version or '' }}</td><td>{% for s in e.discovered_via %}<span class="pill">{{ s }}</span>{% endfor %}</td></tr>{% endfor %}</table>
+<p class="muted">Documented methods come from specifications, forms or JavaScript; ReconForge sends only GET/HEAD requests.</p></section>{% endif %}
+{% if sections.javascript %}<section id="javascript"><h2>JavaScript findings</h2><table><tr><th>File</th><th>Size</th><th>API refs</th><th>Third parties</th><th>Libraries</th><th>Secret-like patterns</th></tr>
+{% for j in d.js_files %}<tr><td class="mono">{{ j.key }}</td><td>{{ j.size or '' }}</td><td>{{ j.endpoints_found or 0 }}</td><td class="mono">{{ (j.third_parties or []) | join(', ') }}</td><td>{% for l in j.libraries or [] %}{{ l.name }} {{ l.version }} {% endfor %}</td><td>{{ j.secret_patterns or 0 }}</td></tr>{% endfor %}</table></section>{% endif %}
+{% if sections.tls %}<section id="tls"><h2>TLS information</h2><table><tr><th>Subject</th><th>Issuer</th><th>SANs</th><th>Expires</th><th>Days</th><th>Trusted</th><th>Presented by</th></tr>
+{% for c in d.certificates %}<tr><td>{{ c.subject_cn }}</td><td>{{ c.issuer_cn }}</td><td class="mono">{{ (c.sans or []) | join(', ') }}</td><td>{{ c.not_after }}</td><td>{{ c.days_remaining }}</td><td>{{ c.trusted }}</td><td class="mono">{{ c.presented_by | join(', ') }}</td></tr>{% endfor %}</table></section>{% endif %}
+{% if sections.cloud %}<section id="cloud"><h2>Cloud and third-party intelligence</h2><table><tr><th>Cloud reference</th><th>Provider</th><th>Service</th><th>Ownership</th></tr>
+{% for c in d.cloud %}<tr><td class="mono">{{ c.attributes.name }}</td><td>{{ c.attributes.provider }}</td><td>{{ c.attributes.service }}</td><td>{{ c.attributes.ownership }}</td></tr>{% endfor %}</table>
+<h3>Third parties referenced by target assets</h3><p class="muted">A reference does not mean the third party belongs to the target.</p><table><tr><th>Domain</th><th>Category / service</th><th>Referenced by</th></tr>
+{% for t in d.third_parties %}<tr><td class="mono">{{ t.key }}</td><td>{{ t.attributes.service or t.attributes.category or '' }}</td><td class="mono">{{ t.referenced_by | join(', ') }}</td></tr>{% endfor %}</table></section>{% endif %}
+{% if sections.security %}<section id="security"><h2>Security configuration observations</h2><table><tr><th>Severity</th><th>Observation</th><th>Subject</th><th>Details</th><th>Recommended review</th><th>Conf.</th><th>Evidence</th></tr>
+{% for f in d.findings %}<tr><td><span class="sev sev-{{ f.attributes.severity }}">{{ f.attributes.severity }}</span></td><td>{{ f.attributes.title }}</td><td class="mono">{{ f.attributes.subject }}</td><td>{{ f.attributes.description }}</td><td class="muted">{{ f.attributes.recommendation }}</td><td>{{ f.confidence }}</td><td class="mono">{{ f.evidence }}</td></tr>{% endfor %}</table></section>{% endif %}
+{% if sections.cve %}<section id="cve"><h2>CVE intelligence</h2><p class="note">Version-string correlations with public advisories. Not confirmed vulnerabilities — verify patch level and configuration.</p>
+<table><tr><th>CVE</th><th>Product</th><th>Version</th><th>Asset</th><th>Summary</th><th>Evidence</th></tr>
+{% for f in d.cve_findings %}<tr><td>{% for c in f.attributes.cves %}<a href="https://nvd.nist.gov/vuln/detail/{{ c }}">{{ c }}</a> {% endfor %}</td><td>{{ f.attributes.product }}</td><td>{{ f.attributes.version }}</td><td class="mono">{{ f.attributes.subject }}</td><td>{{ f.attributes.description | truncate(180) }}</td><td class="mono">{{ f.evidence }}</td></tr>{% endfor %}</table></section>{% endif %}
+{% if sections.changes %}<section id="changes"><h2>Historical changes</h2>{% if d.changes %}<table><tr><th>Significance</th><th>Category</th><th>Change</th><th>Previous</th><th>Current</th><th>First observed</th></tr>
+{% for c in d.changes %}<tr><td>{{ c.significance }}</td><td>{{ c.category }}</td><td>{{ c.summary }}</td><td class="mono">{{ c.previous | tojson | truncate(120) }}</td><td class="mono">{{ c.current | tojson | truncate(120) }}</td><td>{{ c.first_observed }}</td></tr>{% endfor %}</table>
+{% else %}<p class="muted">No changes recorded (baseline scan or no differences).</p>{% endif %}</section>{% endif %}
+{% if sections.graph %}<section id="graph"><h2>Asset relationship graph</h2><p class="muted">{{ graph_stats.nodes }} nodes · {{ graph_stats.edges }} edges ({{ graph_stats.confirmed_edges }} confirmed, {{ graph_stats.inferred_edges }} inferred, dashed). Nodes with a dark outline are shared infrastructure. Interactive version: dashboard → Graph.</p>
+{{ graph_svg | safe }}</section>{% endif %}
+{% if sections.priorities %}<section id="priorities"><h2>Asset prioritization</h2><p class="note">{{ d.priority_disclaimer }}</p><table><tr><th>Tier</th><th>Score</th><th>Asset</th><th>Factors</th></tr>
+{% for p in d.priorities[:40] %}<tr><td class="tier {{ p.tier }}">{{ p.tier }}</td><td>{{ p.score }}</td><td class="mono">{{ p.asset.key }}</td><td>{% for f in p.factors %}<div><b>{{ '%+.1f' | format(f.points) }}</b> {{ f.reason }}</div>{% endfor %}</td></tr>{% endfor %}</table></section>{% endif %}
+{% if sections.ai_analysis and d.ai %}<section id="ai_analysis"><h2>AI-assisted analysis</h2><p class="muted">{{ d.ai.provider }} / {{ d.ai.model }} · {{ d.ai.status }} · {{ d.ai.rejected | length }} statement(s) rejected by the evidence guard. <span class="fact">fact</span> = supported by cited evidence; <span class="hyp">hypothesis</span> = AI interpretation to verify.</p>
+{% for sec, items in d.ai.result.items() if items is iterable and items is not string %}<h3>{{ sec | replace('_', ' ') | title }}</h3>
+{% for it in items %}<div class="{{ 'hyp' if it.kind == 'hypothesis' else 'fact' }}" style="margin:4px 0">{{ it.statement }} <span class="mono muted">[{{ it.refs | join(', ') }}]</span></div>{% endfor %}{% endfor %}</section>{% endif %}
+{% if sections.coverage %}<section id="coverage"><h2>Coverage gaps</h2><table><tr><th>Module</th><th>Status</th><th>Reason</th></tr>
+{% for g in d.coverage_gaps %}<tr><td>{{ g.module }}</td><td>{{ g.status }}</td><td class="muted">{{ g.reason }}</td></tr>{% endfor %}</table></section>{% endif %}
+{% if sections.coverage_quality and d.coverage %}<section id="coverage_quality"><h2>Coverage &amp; quality</h2>
+<p class="note">{{ d.coverage.statement }}</p>
+<div class="cards">{% for k, v in d.coverage.metrics.items() if v is number %}<div class="card"><b>{{ v }}</b><span>{{ k | replace('_', ' ') }}</span></div>{% endfor %}</div>
+<h3>Phases</h3><table><tr><th>Phase</th><th>Status</th><th>Modules</th></tr>{% for ph, p in d.coverage.phases.items() %}<tr><td>{{ ph }}</td><td>{{ p.status }}</td><td>{% for m, st in p.modules.items() %}<span class="pill">{{ m }}: {{ st }}</span>{% endfor %}</td></tr>{% endfor %}</table>
+<h3>Sources</h3><table><tr><th>Source</th><th>Kind</th><th>Status</th><th>Results</th><th>Note</th></tr>{% for n, s in d.coverage.sources.items() %}<tr><td>{{ n }}</td><td>{{ s.kind }}</td><td>{{ s.status }}</td><td>{{ s.results if s.results is defined else '' }}</td><td class="muted">{{ s.error or '' }}</td></tr>{% endfor %}</table></section>{% endif %}
+{% if sections.source_comparison %}<section id="source_comparison"><h2>Discovery source comparison</h2><table><tr><th>Source</th><th>Hosts</th><th>Unique</th><th>Unique hosts</th></tr>
+{% for c in d.source_comparison %}<tr><td>{{ c.source }}</td><td>{{ c.hosts }}</td><td>{{ c.unique }}</td><td class="mono">{{ c.unique_hosts | join(', ') }}</td></tr>{% endfor %}</table></section>{% endif %}
+{% if sections.subdomain_lists %}<section id="subdomain_lists"><h2>Resolved / unresolved hostnames &amp; clusters</h2>
+<p><b>Resolved ({{ d.resolved_hosts | length }})</b>: {% for h in d.resolved_hosts %}<span class="pill">{{ h }}</span>{% endfor %}</p>
+<p><b>Unresolved ({{ d.unresolved_hosts | length }})</b>: {% for h in d.unresolved_hosts %}<span class="pill">{{ h }}</span>{% endfor %}</p>
+<p><b>Environment labels</b>: {% for k, v in d.subdomain_clusters.by_environment.items() %}<span class="pill">{{ k }}: {{ v | join(', ') }}</span>{% endfor %}</p>
+<p><b>Name-pattern clusters</b>: {% for k, v in d.subdomain_clusters.by_name_pattern.items() %}<span class="pill">{{ k }}: {{ v | join(', ') }}</span>{% endfor %}</p></section>{% endif %}
+{% if sections.dns_infrastructure %}<section id="dns_infrastructure"><h2>DNS &amp; mail infrastructure</h2><table><tr><th>Domain</th><th>Nameservers</th><th>DNSSEC</th><th>CAA</th><th>MX</th><th>SPF lookups</th><th>DMARC</th><th>DKIM</th><th>MTA-STS / TLS-RPT / BIMI</th></tr>
+{% for x in d.dns_infrastructure %}<tr><td>{{ x.domain }}</td><td class="mono">{% for n in x.nameservers %}<div>{{ n.host }} ({{ n.provider or '?' }})</div>{% endfor %}</td><td>{{ x.dnssec }}</td><td class="mono">{{ x.caa | join(', ') or 'none' }}</td><td class="mono">{{ x.mx | join(', ') }}</td><td>{{ x.spf_dns_lookups }}</td><td>{{ x.dmarc_policy or 'none' }}</td><td>{{ x.dkim_selectors_found | join(', ') or 'none' }}</td><td>{{ x.mta_sts }} / {{ x.tls_rpt }} / {{ x.bimi }}</td></tr>{% endfor %}</table>
+<h3>CNAME chains</h3>{% for c in d.cname_analysis %}<div class="mono">{{ c.host }} → {{ c.chain | join(' → ') }}</div>{% endfor %}</section>{% endif %}
+{% if sections.http_profiles %}<section id="http_profiles"><h2>HTTP/HTTPS intelligence</h2><table><tr><th>Application</th><th>Redirect chain</th><th>HTTP/2</th><th>HTTP/3</th><th>Compression</th><th>Cache-Control</th><th>HSTS</th><th>CSP</th><th>Default page</th></tr>
+{% for p in d.http_profiles %}<tr><td class="mono">{{ p.app }}</td><td class="mono">{% for c in p.redirect_chain or [] %}<div>{{ c.status }} {{ c.url }}</div>{% endfor %}</td><td>{{ p.http2 }}</td><td>{{ p.http3_advertised }}</td><td>{{ p.compression or '' }}</td><td class="mono">{{ p.cache_control or '' }}</td><td>{{ p.hsts.max_age if p.hsts else 'none' }}</td><td>{{ p.csp.directives | join(' ') if p.csp else 'none' }}</td><td>{{ p.default_page or '' }}</td></tr>{% endfor %}</table>
+{% if d.http_vs_https %}<h3>HTTP vs HTTPS behaviour</h3><table><tr><th>Host</th><th>HTTP→HTTPS redirect</th><th>Same title</th><th>Same server</th></tr>{% for x in d.http_vs_https %}<tr><td>{{ x.host }}</td><td>{{ x.http_redirects_to_https }}</td><td>{{ x.same_title }}</td><td>{{ x.same_server }}</td></tr>{% endfor %}</table>{% endif %}</section>{% endif %}
+{% if sections.vhosts %}<section id="vhosts"><h2>Virtual host &amp; application inventory</h2>
+{% for ip, apps in d.vhost_inventory.applications_by_ip.items() %}<p><b class="mono">{{ ip }}</b>: {% for a in apps %}<span class="pill">{{ a }}</span>{% endfor %}</p>{% endfor %}
+<p><b>Shared certificates</b>: {% for c, apps in d.vhost_inventory.shared_certificates.items() %}<span class="pill">{{ c }} → {{ apps | join(', ') }}</span>{% endfor %}</p>
+<p><b>Default-vhost-only hosts</b>: {{ d.vhost_inventory.default_vhost_only_hosts | join(', ') or 'none' }}</p></section>{% endif %}
+{% if sections.identity %}<section id="identity"><h2>Authentication &amp; identity infrastructure</h2><p class="muted">Inventory only; no authentication, account enumeration or session testing was performed.</p><table><tr><th>Application</th><th>Login</th><th>Registration</th><th>Password reset</th><th>Providers</th><th>OIDC / SAML</th></tr>
+{% for i in d.identity %}<tr><td class="mono">{{ i.app }}</td><td class="mono">{{ i.login_pages | join(', ') }}</td><td class="mono">{{ i.registration | join(', ') }}</td><td class="mono">{{ i.password_reset | join(', ') }}</td><td>{{ i.providers | join(', ') }}</td><td class="mono">{{ i.oidc | map(attribute='issuer') | join(', ') }} {{ i.saml | map(attribute='entity_id') | join(', ') }}</td></tr>{% endfor %}</table></section>{% endif %}
+{% if sections.third_party_inventory %}<section id="third_party_inventory"><h2>Third-party dependency inventory</h2><p class="muted">Referenced services are not assumed to belong to the target and were not scanned.</p><table><tr><th>Category</th><th>Services</th></tr>
+{% for cat, items in d.third_party_inventory.items() %}<tr><td>{{ cat | replace('_', ' ') }}</td><td>{% for t in items %}<span class="pill">{{ t.domain }}{% if t.service %} · {{ t.service }}{% endif %}</span>{% endfor %}</td></tr>{% endfor %}</table></section>{% endif %}
+{% if sections.parameters %}<section id="parameters"><h2>Endpoint categories &amp; parameter inventory</h2><p>{% for k, v in d.endpoint_categories.items() %}<span class="pill">{{ k }}: {{ v }}</span>{% endfor %}</p><p class="muted">Categories describe function, not weakness.</p>
+<table><tr><th>Parameter</th><th>Endpoints</th><th>Examples</th></tr>{% for p in d.parameter_inventory[:100] %}<tr><td class="mono">{{ p.name }}</td><td>{{ p.endpoints }}</td><td class="mono">{{ p.examples | join(', ') }}</td></tr>{% endfor %}</table></section>{% endif %}
+{% if sections.historical_urls %}<section id="historical_urls"><h2>Historical URLs ({{ d.historical_urls | length }})</h2>{% for e in d.historical_urls[:300] %}<div class="mono">{{ e.key }} <span class="muted">{{ e.discovered_via | join(', ') }}</span></div>{% endfor %}</section>{% endif %}
+{% if sections.documents %}<section id="documents"><h2>Public documents ({{ d.documents | length }})</h2><p class="muted">HEAD metadata only; contents not downloaded.</p>{% for e in d.documents %}<div class="mono">{{ e.key }} · {{ e.attributes.content_type }} · {{ e.attributes.size }} B · {{ e.attributes.last_modified }}</div>{% endfor %}</section>{% endif %}
+{% if sections.secrets %}<section id="secrets"><h2>Potential secret exposure (redacted)</h2><p class="note">Values are redacted and were never used or validated.</p><table><tr><th>Location</th><th>Pattern</th><th>Detail</th><th>Conf.</th><th>Evidence</th></tr>
+{% for x in d.secret_exposures %}<tr><td class="mono">{{ x.location }}</td><td>{{ x.pattern }}</td><td>{{ x.redacted }}</td><td>{{ x.confidence }}</td><td class="mono">{{ x.evidence }}</td></tr>{% endfor %}</table></section>{% endif %}
+{% if sections.screenshot_groups %}<section id="screenshot_groups"><h2>Visually similar applications</h2>{% for g in d.screenshot_groups %}<p>{% for a in g %}<span class="pill">{{ a }}</span>{% endfor %}</p>{% else %}<p class="muted">No visually similar groups.</p>{% endfor %}<p class="muted">Near-blank renders: {{ d.screenshot_near_blank | join(', ') or 'none' }}</p></section>{% endif %}
+{% if sections.limitations %}<section id="limitations"><h2>Assessment limitations</h2><ul>{% for l in d.limitations %}<li>{{ l }}</li>{% endfor %}</ul></section>{% endif %}
+{% if sections.evidence %}<section id="evidence"><h2>Evidence references</h2><table><tr><th>Evidence</th><th>Kind</th><th>Module</th><th>Summary</th><th>SHA-256</th></tr>
+{% for e in d.evidence.values() %}<tr><td class="mono">{{ e.id }}</td><td>{{ e.kind }}</td><td>{{ e.module }}</td><td>{{ e.summary }}</td><td class="mono">{{ (e.sha256 or '')[:16] }}</td></tr>{% endfor %}</table></section>{% endif %}
+<p class="muted">Generated by ReconForge · {{ generated_at }}</p>
+</main></body></html>

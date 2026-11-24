@@ -1,0 +1,98 @@
+# ReconForge demo configuration: the controlled lab (lab/lab_server.py --domain example.com) served as example.com.
+# Used by lab/make_demo.sh to produce the README screenshots. Everything runs on 127.0.0.1; the local lab DNS
+# answers for example.com, so no request reaches the real example.com.
+database:
+  url: sqlite:///data/demo/reconforge.db
+
+storage:
+  data_dir: data/demo
+  evidence_dir: data/demo/evidence
+  reports_dir: data/demo/reports
+  backups_dir: data/demo/backups
+  logs_dir: data/demo/logs
+  retention_days: 90
+
+network:
+  offline: true                 # public-internet modules skip unless pointed at a local emulator
+  rate_limit_per_second: 50
+  max_concurrency: 8
+
+dns:
+  resolvers: ["127.0.0.1:5354"]  # lab authoritative DNS
+  timeout: 2
+
+http:
+  probe_ports: {http: [8080], https: [8443]}
+
+ports:
+  tcp: [2222, 8080, 8443, 9200]
+  timeout: 1.0
+
+asn:
+  static_map:
+    "127.0.0.0/8": {asn: 64500, name: "EXAMPLE-NET (documentation ASN)", country: "ZZ"}
+
+crtsh: {base_url: "http://127.0.0.1:8099"}
+
+# Passive providers pointed at the lab emulators. Providers without an emulator (SecurityTrails,
+# VirusTotal, Shodan DNS, Chaos, WhoisXML, Brave, GreyNoise, IPinfo) are reported as unavailable.
+providers:
+  include_private_ips: true          # lab only: the lab's addresses are loopback
+  otx: {base_url: "http://127.0.0.1:8099/otx"}
+  hackertarget: {base_url: "http://127.0.0.1:8099/hackertarget"}
+  urlscan: {enabled: false}
+  commoncrawl: {base_url: "http://127.0.0.1:8099/commoncrawl"}
+  internetdb: {base_url: "http://127.0.0.1:8099/internetdb"}
+  rdap_ip: {base_url: "http://127.0.0.1:8099/rdap"}
+  rdap_domain: {base_url: "http://127.0.0.1:8099/rdap"}
+
+# Registry extension: a lab stand-in tool added purely through configuration.
+tool_registry:
+  - {name: lab-subenum, category: subdomain_enum, phase: passive, profile: passive, maintenance: active, local: true,
+     purpose: "Lab stand-in demonstrating registry-driven tool integration", version_args: ["--version"],
+     signature: lab-subenum, command: ["{domain}"], parser: hostnames}
+tools:
+  lab-subenum: {path: lab/bin/lab-subenum}
+
+dns_bruteforce: {max_permutations: 200, recursion_depth: 1, recursive_words: 5}
+historical_urls: {base_url: "http://127.0.0.1:8099"}
+github: {api_base: "http://127.0.0.1:8099"}
+
+screenshots: {timeout: 30}
+
+notifications:
+  enabled: false
+
+reports:
+  formats: [markdown, html, json, csv, pdf]
+
+ai:
+  enabled: false   # set true and export ANTHROPIC_API_KEY (or `ant auth login`) to enable Claude analysis
+
+targets:
+  - name: example.com
+    root_domains: [example.com]
+    profile: comprehensive
+    authorization:
+      confirmed: true
+      reference: "self-hosted demo lab"
+      contact: ""
+    scope:
+      include: ["example.com", "*.example.com"]
+      exclude: []
+      ip_allow: ["127.0.0.0/8"]
+
+schedules:
+  - name: example-weekly
+    target: example.com
+    frequency: weekly
+    at: "02:30"
+    profile: standard
+
+# keep the lab suite fast: the extended active modules use small budgets here
+content_discovery: {wordlist: lab/fixtures/content-words.txt, max_apps: 8, threads: 8}
+vhost_discovery: {max_candidates: 60}
+lookalike_domains: {max_candidates: 60}
+
+# keep the demo build short: Nuclei runs low..critical templates against the local lab, capped at 8 minutes
+nuclei: {severities: [low, medium, high, critical], rate_limit: 400, concurrency: 50, request_timeout: 3, timeout_minutes: 8}
