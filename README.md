@@ -67,7 +67,7 @@ real scan data.
 macOS (Homebrew), Ubuntu/Debian and Kali Linux:
 
 ```bash
-git clone https://github.com/<you>/ReconForge.git
+git clone https://github.com/PranavGajjar0305/ReconForge.git
 cd ReconForge
 ./install.sh
 ```
