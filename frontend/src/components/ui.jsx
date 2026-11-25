@@ -1,4 +1,4 @@
-import { Component, useEffect, useMemo, useState } from "react";
+import { Component, useEffect, useMemo, useRef, useState } from "react";
 import { Link } from "react-router-dom";
 import { api, withToken } from "../api";
 
@@ -121,17 +121,36 @@ export function useLoad(fn, deps) {
   return { ...state, reload: () => setTick((t) => t + 1) };
 }
 
+export function useDebounced(value, ms = 250) {
+  const [v, setV] = useState(value);
+  useEffect(() => { const t = setTimeout(() => setV(value), ms); return () => clearTimeout(t); }, [value, ms]);
+  return v;
+}
+
+// lower-cased search text per row, built once per row object (not on every keystroke)
+const SEARCH_TEXT = new WeakMap();
+const searchText = (x) => {
+  let t = SEARCH_TEXT.get(x);
+  if (t === undefined) { t = JSON.stringify(x).toLowerCase(); SEARCH_TEXT.set(x, t); }
+  return t;
+};
+
 /** Generic searchable / sortable / filterable table. columns: [{key, label, render?, sort?, className?}] */
 export function DataTable({ rows, columns, search = true, filters = [], onRowClick, pageSize = 100, empty = "No data" }) {
-  const [q, setQ] = useState("");
+  const [qIn, setQ] = useState("");
+  const q = useDebounced(qIn, rows && rows.length > 5000 ? 300 : 120);
   const [sort, setSort] = useState(null);
   const [fv, setFv] = useState({});
   const [page, setPage] = useState(0);
+  const filterKeys = filters.map((f) => f.key).join("|");
+  const options = useMemo(() => Object.fromEntries(filters.map((f) => [f.key,
+    [...new Set((rows || []).flatMap((x) => String(f.get(x)).split("|")).filter(Boolean))].sort()])),
+  [rows, filterKeys]); // eslint-disable-line react-hooks/exhaustive-deps
   const filtered = useMemo(() => {
     let r = rows || [];
     if (q) {
       const ql = q.toLowerCase();
-      r = r.filter((x) => JSON.stringify(x).toLowerCase().includes(ql));
+      r = r.filter((x) => searchText(x).includes(ql));
     }
     for (const f of filters) {
       if (fv[f.key] && fv[f.key] !== "__all") r = r.filter((x) => String(f.get(x)).split("|").includes(fv[f.key]));
@@ -146,16 +165,16 @@ export function DataTable({ rows, columns, search = true, filters = [], onRowCli
       });
     }
     return r;
-  }, [rows, q, sort, fv, filters, columns]);
+  }, [rows, q, sort, fv]); // eslint-disable-line react-hooks/exhaustive-deps
   useEffect(() => setPage(0), [q, fv]);
   const pages = Math.max(1, Math.ceil(filtered.length / pageSize));
   const visible = filtered.slice(page * pageSize, (page + 1) * pageSize);
   return (
     <div>
       <div className="mb-3 flex flex-wrap items-center gap-2">
-        {search && <input className="input w-72" placeholder="Search…" value={q} onChange={(e) => setQ(e.target.value)} />}
+        {search && <input className="input w-72" placeholder="Search…" value={qIn} onChange={(e) => setQ(e.target.value)} />}
         {filters.map((f) => {
-          const opts = [...new Set((rows || []).flatMap((x) => String(f.get(x)).split("|")).filter(Boolean))].sort();
+          const opts = options[f.key] || [];
           return (
             <select key={f.key} className="input" value={fv[f.key] || "__all"} onChange={(e) => setFv({ ...fv, [f.key]: e.target.value })}>
               <option value="__all">{f.label}: all</option>
@@ -196,6 +215,94 @@ export function DataTable({ rows, columns, search = true, filters = [], onRowCli
       )}
     </div>
   );
+}
+
+/**
+ * Table whose rows live on the server: only the current page is fetched and rendered, so it stays fast with any
+ * number of rows. fetchPage({offset, limit, q, filters, desc}) -> Promise<{total, rows}>.
+ * filters: [{key, label, options: [[value, label]]}]
+ */
+export function ServerTable({ fetchPage, columns, filters = [], onRowClick, pageSize = 100, empty = "No data",
+                              resetKey = "", searchPlaceholder = "Search…", sortLabel = null, poll = 0 }) {
+  const [qIn, setQ] = useState("");
+  const q = useDebounced(qIn, 350);
+  const [fv, setFv] = useState({});
+  const [page, setPage] = useState(0);
+  const [desc, setDesc] = useState(false);
+  const [state, setState] = useState({ rows: [], total: null, loading: true, error: null });
+  const [tick, setTick] = useState(0);
+  const seq = useRef(0);
+  const key = JSON.stringify([q, fv, desc, resetKey]);
+  useEffect(() => setPage(0), [key]);
+  useEffect(() => {
+    const my = ++seq.current;
+    setState((s) => ({ ...s, loading: true }));
+    fetchPage({ offset: page * pageSize, limit: pageSize, q: q || undefined, filters: fv, desc })
+      .then((r) => my === seq.current && setState({ rows: r.rows || [], total: r.total ?? 0, loading: false, error: null }))
+      .catch((error) => my === seq.current && setState((s) => ({ ...s, loading: false, error })));
+  }, [key, page, pageSize, tick]); // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => {
+    if (!poll) return undefined;
+    const t = setInterval(() => setTick((x) => x + 1), poll);
+    return () => clearInterval(t);
+  }, [poll]);
+  const pages = Math.max(1, Math.ceil((state.total || 0) / pageSize));
+  const [jump, setJump] = useState("");
+  return (
+    <div>
+      <div className="mb-3 flex flex-wrap items-center gap-2">
+        <input className="input w-72" placeholder={searchPlaceholder} value={qIn} onChange={(e) => setQ(e.target.value)} />
+        {filters.map((f) => (
+          <select key={f.key} className="input max-w-[220px]" value={fv[f.key] || ""} onChange={(e) => setFv({ ...fv, [f.key]: e.target.value || undefined })}>
+            <option value="">{f.label}: all</option>
+            {(f.options || []).map(([v, l]) => <option key={v} value={v}>{l ?? v}</option>)}
+          </select>
+        ))}
+        {sortLabel && <button className="btn" onClick={() => setDesc(!desc)}>{sortLabel} {desc ? "Z→A" : "A→Z"}</button>}
+        <span className="ml-auto flex items-center gap-2 text-xs text-slate-500">
+          {state.loading && <span className="radar active" style={{ "--size": "12px" }} />}
+          {state.total === null ? "" : `${state.total.toLocaleString()} rows`}
+        </span>
+      </div>
+      <div className={`max-h-[70vh] overflow-auto rounded-[3px] border border-slate-800 bg-slate-950/40 ${state.loading ? "opacity-70" : ""}`}>
+        <table className="tbl">
+          <thead><tr>{columns.map((c) => <th key={c.key} className={c.className || ""}>{c.label}</th>)}</tr></thead>
+          <tbody>
+            {state.rows.map((r, i) => (
+              <tr key={r.id || i} className={onRowClick ? "cursor-pointer" : ""} onClick={() => onRowClick && onRowClick(r)}>
+                {columns.map((c) => <td key={c.key} className={c.className || ""}>{c.render ? c.render(r) : String(r[c.key] ?? "")}</td>)}
+              </tr>
+            ))}
+          </tbody>
+        </table>
+        {!state.loading && !state.rows.length && !state.error && <Empty>{empty}</Empty>}
+        {state.error && <div className="p-4 text-[13px] text-[#ff8da0]">{state.error.message}</div>}
+      </div>
+      {pages > 1 && (
+        <div className="mt-2 flex flex-wrap items-center gap-2 text-xs text-slate-400">
+          <button className="btn" disabled={page === 0} onClick={() => setPage(0)}>First</button>
+          <button className="btn" disabled={page === 0} onClick={() => setPage(page - 1)}>Prev</button>
+          <span className="tabular">page {(page + 1).toLocaleString()} / {pages.toLocaleString()}</span>
+          <button className="btn" disabled={page >= pages - 1} onClick={() => setPage(page + 1)}>Next</button>
+          <button className="btn" disabled={page >= pages - 1} onClick={() => setPage(pages - 1)}>Last</button>
+          <form className="flex items-center gap-1" onSubmit={(e) => { e.preventDefault(); const n = parseInt(jump, 10); if (n >= 1 && n <= pages) setPage(n - 1); setJump(""); }}>
+            <input className="input w-20 py-0.5" inputMode="numeric" placeholder="go to" value={jump} onChange={(e) => setJump(e.target.value)} aria-label="Go to page" />
+          </form>
+        </div>
+      )}
+    </div>
+  );
+}
+
+/** Long lists render `step` items at a time; returns [visible, button-or-null]. */
+export function useStep(items, step = 100) {
+  const [n, setN] = useState(step);
+  const list = items || [];
+  useEffect(() => setN(step), [items, step]);
+  const more = list.length > n
+    ? <button className="btn-ghost mt-1 text-[12px]" onClick={() => setN(n + step * 5)}>Show more ({(list.length - n).toLocaleString()} not shown)</button>
+    : null;
+  return [list.length > n ? list.slice(0, n) : list, more];
 }
 
 export function Pills({ items }) {

@@ -31,6 +31,7 @@ from ..db.models import (AIAnalysis, Asset, AssetScore, AssetState, Change, Evid
                          Relation, Report, Scan, Schedule, Target)
 from ..graph.build import build_graph, to_cytoscape, to_dot, to_graphml
 from ..reports.data import build_report_data
+from .logview import LINES, text_window
 from ..util import iso
 
 STATIC = Path(__file__).resolve().parent / "static"
@@ -118,6 +119,7 @@ class TriageBody(BaseModel):
     ids: list[str] | None = None   # bulk update (the path id is included too)
 
 
+RELATED_CAP = 200  # related assets listed per relation type in the asset drawer
 TRIAGE_STATES = ["new", "investigating", "confirmed", "false_positive", "accepted_risk", "fixed"]
 SEV_WEIGHT = {"critical": 100, "high": 70, "medium": 40, "low": 15, "info": 3}
 LOOPBACK = {"127.0.0.1", "localhost", "::1", "testserver"}
@@ -257,6 +259,55 @@ def create_app(cfg: Config, with_scheduler: bool = False, bind_host: str | None 
                              .order_by(Scan.started_at.desc()).limit(1)).scalar_one_or_none()
         return newest(["completed", "partial"]) or newest(["running", "cancelled", "failed"])
 
+    # Dashboard views share one cached, light build of the latest scan (archive URLs left out, counts exact).
+    # It is rebuilt when the scan changes, after triage / false-positive edits, and every 20 s while anything for
+    # the target is still running, so switching pages on a huge scan does not rebuild it each time.
+    import time as _time
+    from collections import OrderedDict
+
+    report_cache: OrderedDict[str, tuple] = OrderedDict()
+    report_lock = threading.Lock()
+    data_version = [0]
+
+    refreshing: set[str] = set()
+
+    def _store(scan_id: str, key, d) -> None:
+        report_cache[scan_id] = (key, _time.time(), d, {})  # last slot: encoded responses, filled on demand
+        report_cache.move_to_end(scan_id)
+        while len(report_cache) > 3:
+            report_cache.popitem(last=False)
+
+    def _refresh(scan_id: str, key) -> None:
+        try:
+            with db.session() as s2:
+                d = build_report_data(s2, scan_id, light=True)
+            with report_lock:
+                _store(scan_id, key, d)
+        except Exception:  # keep serving the previous build
+            log.exception("background summary rebuild failed for %s", scan_id)
+        finally:
+            refreshing.discard(scan_id)
+
+    def light_report(s, sc: Scan) -> dict:
+        busy = s.execute(select(func.count()).select_from(Scan).where(Scan.target_id == sc.target_id,
+                                                                      Scan.status == "running")).scalar()
+        key = (sc.status, iso(sc.finished_at), sc.results_count, data_version[0])
+        with report_lock:
+            hit = report_cache.get(sc.id)
+            if hit and hit[0] == key:
+                report_cache.move_to_end(sc.id)
+                if busy and _time.time() - hit[1] >= 20 and sc.id not in refreshing:
+                    # still running: answer with the last build now and rebuild in the background
+                    refreshing.add(sc.id)
+                    threading.Thread(target=_refresh, args=(sc.id, key), daemon=True).start()
+                return hit[2]
+            d = build_report_data(s, sc.id, light=True)
+            _store(sc.id, key, d)
+            return d
+
+    def data_changed() -> None:
+        data_version[0] += 1
+
     A = Depends(auth)
 
     # ---------------------------------------------------------------- meta
@@ -327,7 +378,7 @@ def create_app(cfg: Config, with_scheduler: bool = False, bind_host: str | None 
             sc = latest_scan(s, tid)
             if sc is None:
                 return {"scan": None}
-            d = build_report_data(s, sc.id)
+            d = light_report(s, sc)
             scans = list(s.execute(select(Scan).where(Scan.target_id == tid).order_by(Scan.started_at)).scalars())
             trend = []
             for x in scans[-30:]:
@@ -372,7 +423,7 @@ def create_app(cfg: Config, with_scheduler: bool = False, bind_host: str | None 
             sc = latest_scan(s, tid)
             if sc is None:
                 return []
-            d = build_report_data(s, sc.id)
+            d = light_report(s, sc)
         ips = {i["key"]: i for i in d["ips"]}
         apps_by_host = defaultdict(list)
         for a in d["web_apps"]:
@@ -400,13 +451,79 @@ def create_app(cfg: Config, with_scheduler: bool = False, bind_host: str | None 
         return rows
 
     @app.get("/api/targets/{name}/report-data", dependencies=[A])
-    def report_data(name: str, scan_id: str | None = None):
+    def report_data(name: str, scan_id: str | None = None, full: bool = False):
+        """Everything about one scan. Dashboard pages get the cached light build: every asset type in full except
+        endpoints, which are summarised (exact counts) and listed through /endpoints page by page."""
         with db.session() as s:
             tid = target_id(s, name)
             sc = s.get(Scan, scan_id) if scan_id else latest_scan(s, tid)
             if sc is None:
                 raise HTTPException(404, "no scans")
-            return build_report_data(s, sc.id)
+            if full:
+                return build_report_data(s, sc.id)
+            d = light_report(s, sc)
+            enc = report_cache.get(sc.id, (None, None, None, {}))[3]
+            if enc.get("json") is None or enc.get("for") is not d:  # encode a cached build once, not per page view
+                enc["json"], enc["for"] = SafeJSONResponse(d).body, d
+            return Response(enc["json"], media_type="application/json")
+
+    @app.get("/api/targets/{name}/endpoints", dependencies=[A])
+    def endpoints_page(name: str, offset: int = Query(0, ge=0), limit: int = Query(100, ge=1, le=1000),
+                       q: str | None = Query(None, max_length=300), kind: str | None = None, host: str | None = None,
+                       origin: str | None = Query(None, pattern="^(live|archive)$"), desc: bool = False):
+        """One page of endpoints, filtered and sorted in the database (works the same with 100 or 1,000,000 rows)."""
+        from ..db.fastpath import is_historical, jfield, live, not_historical
+
+        with db.session() as s:
+            tid = target_id(s, name)
+            d = s.bind.dialect.name
+            cond = [Asset.target_id == tid, Asset.type == "endpoint", *live()]
+            if kind:
+                cond.append(jfield(d, Asset.attributes, "kind") == kind)
+            if host:
+                cond.append(jfield(d, Asset.attributes, "host") == host)
+            if origin == "archive":
+                cond.append(is_historical(d, Asset.attributes))
+            elif origin == "live":
+                cond.append(not_historical(d, Asset.attributes))
+            if q and q.strip():
+                cond.append(Asset.key.ilike(f"%{q.strip()}%"))
+            total = s.execute(select(func.count()).select_from(Asset).where(*cond)).scalar() or 0
+            rows = s.execute(select(Asset).where(*cond).order_by(Asset.key.desc() if desc else Asset.key)
+                             .offset(offset).limit(limit)).scalars()
+            out = []
+            for e in rows:
+                at = e.attributes or {}
+                out.append({"id": e.id, "key": e.key, "kind": at.get("kind"), "host": at.get("host"), "status": at.get("status"),
+                            "api_version": at.get("api_version"), "methods_documented": at.get("methods_documented", []),
+                            "methods_observed": at.get("methods_observed", []), "discovered_via": at.get("discovered_via", []),
+                            "historical": bool(at.get("historical")), "archived_at": at.get("archived_at"),
+                            "archived_status": at.get("archived_status"), "evidence": at.get("_last_evidence"),
+                            "scope": e.scope, "last_seen": iso(e.last_seen)})
+            return {"total": total, "offset": offset, "limit": limit, "rows": out}
+
+    facet_cache: dict[str, tuple] = {}
+
+    @app.get("/api/targets/{name}/endpoints/facets", dependencies=[A])
+    def endpoint_facets(name: str):
+        """Filter options for the endpoints table: kinds, origins and the hosts with the most endpoints."""
+        from ..db.fastpath import jfield, live
+        from ..reports.data import endpoint_summary
+
+        with db.session() as s:
+            tid = target_id(s, name)
+            n = s.execute(select(func.count()).select_from(Asset).where(Asset.target_id == tid, Asset.type == "endpoint",
+                                                                       *live())).scalar() or 0
+            hit = facet_cache.get(tid)
+            if hit and hit[0] == (n, data_version[0]):
+                return hit[1]
+            summ = endpoint_summary(s, tid)
+            host = jfield(s.bind.dialect.name, Asset.attributes, "host")
+            hosts = s.execute(select(host, func.count()).where(Asset.target_id == tid, Asset.type == "endpoint", *live())
+                              .group_by(host).order_by(func.count().desc()).limit(500)).all()
+            out = {**summ, "hosts": [[h, c] for h, c in hosts if h]}
+            facet_cache[tid] = ((n, data_version[0]), out)
+            return out
 
     @app.get("/api/targets/{name}/findings-report", dependencies=[A])
     def findings_report(name: str, format: str = "html", scan_id: str | None = None):
@@ -420,7 +537,7 @@ def create_app(cfg: Config, with_scheduler: bool = False, bind_host: str | None 
             sc = s.get(Scan, scan_id) if scan_id else latest_scan(s, tid)
             if sc is None:
                 raise HTTPException(404, "no scans")
-            data = build_report_data(s, sc.id)
+            data = light_report(s, sc) if not scan_id else build_report_data(s, sc.id, light=True)
         stamp = (data["scan"].get("started_at") or "")[:10]
         fname = f"reconforge-findings-{name}-{stamp}.{format}"
         if format == "pdf":
@@ -436,7 +553,14 @@ def create_app(cfg: Config, with_scheduler: bool = False, bind_host: str | None 
             a = s.get(Asset, asset_id)
             if a is None:
                 raise HTTPException(404)
-            rels = list(s.execute(select(Relation).where((Relation.src_id == asset_id) | (Relation.dst_id == asset_id))).scalars())
+            # a host can have hundreds of thousands of archive URLs: list at most RELATED_CAP per relation type,
+            # and report the real totals so the drawer can say what it left out
+            rels, related_counts = [], []
+            for direction, col in (("out", Relation.src_id), ("in", Relation.dst_id)):
+                for rtype, n in s.execute(select(Relation.type, func.count()).where(col == asset_id).group_by(Relation.type)).all():
+                    got = list(s.execute(select(Relation).where(col == asset_id, Relation.type == rtype).limit(RELATED_CAP)).scalars())
+                    rels += got
+                    related_counts.append({"relation": rtype, "direction": direction, "total": n, "shown": len(got)})
             others = {x.id: x for x in s.execute(select(Asset).where(Asset.id.in_({r.src_id for r in rels} | {r.dst_id for r in rels}))).scalars()}
             related = [{"relation": r.type, "direction": "out" if r.src_id == asset_id else "in", "confirmed": r.confirmed,
                         "confidence": r.confidence, "sources": r.sources, "evidence_ids": r.evidence_ids,
@@ -444,7 +568,7 @@ def create_app(cfg: Config, with_scheduler: bool = False, bind_host: str | None 
                        for r in rels if (r.dst_id if r.src_id == asset_id else r.src_id) in others]
             base = _asset(a)
         hist = asset_history(db, asset_id)
-        return {**base, "related": related, "history": hist}
+        return {**base, "related": related, "related_counts": related_counts, "history": hist}
 
     @app.post("/api/assets/{asset_id}/false-positive", dependencies=[A])
     def mark_fp(asset_id: str, body: FPBody):
@@ -454,6 +578,7 @@ def create_app(cfg: Config, with_scheduler: bool = False, bind_host: str | None 
                 raise HTTPException(404)
             a.false_positive = body.false_positive
             a.fp_reason = body.reason if body.false_positive else None
+            data_changed()
             return _asset(a)
 
     # ------------------------------------------------------------ evidence
@@ -511,6 +636,44 @@ def create_app(cfg: Config, with_scheduler: bool = False, bind_host: str | None 
             text = "\n".join(l for l in text.splitlines() if tag.search(l))
             return PlainTextResponse(hide_home(text[-2_000_000:].encode()))
         return PlainTextResponse(hide_home(text[-400000:].encode()))
+
+    def _lines_json(w: dict) -> Response:
+        return SafeJSONResponse(w)
+
+    @app.get("/api/scans/{scan_id}/log/lines", dependencies=[A])
+    def scan_log_lines(scan_id: str, start: int | None = Query(None, ge=0), limit: int = Query(500, ge=0, le=2000),
+                       module: str | None = Query(None, max_length=80), kind: str | None = None,
+                       q: str | None = Query(None, max_length=300)):
+        """A window of the execution log: lines [start, start+limit) of the filtered view (no start = the newest).
+        The server keeps an incremental line index, so a 100,000-line tool log is served a page at a time."""
+        with db.session() as s:
+            sc = s.get(Scan, scan_id)
+            path = Path(sc.log_path) if sc is not None and sc.log_path else cfg.dir("logs_dir") / f"{scan_id}.log"
+        run = manager.runs.get(scan_id)
+        live_now = bool(run and run.status in ("starting", "running"))
+        if not path.exists():
+            if sc is None and not run:
+                raise HTTPException(404)
+            return {"total": 0, "start": 0, "lines": [], "bytes": 0, "running": live_now}
+        w = LINES.window(path, start, limit, module=module, kind=kind, q=q)
+        return _lines_json({**w, "running": live_now})
+
+    def _evidence_source(e: Evidence):
+        if e.path and Path(e.path).exists() and not e.path.endswith(".png"):
+            return Path(e.path)
+        return e.content or ""
+
+    @app.get("/api/evidence/{evidence_id}/lines", dependencies=[A])
+    def evidence_lines(evidence_id: str, start: int | None = Query(None, ge=0), limit: int = Query(500, ge=0, le=2000),
+                       q: str | None = Query(None, max_length=300)):
+        """A window of one evidence item (raw tool output can be hundreds of thousands of lines)."""
+        with db.session() as s:
+            e = s.get(Evidence, evidence_id)
+            if e is None:
+                raise HTTPException(404)
+            src = _evidence_source(e)
+        w = LINES.window(src, start, limit, q=q) if isinstance(src, Path) else text_window(src, start, limit, q=q)
+        return _lines_json(w)
 
     @app.get("/api/scans/{scan_id}/reports", dependencies=[A])
     def scan_reports(scan_id: str):
@@ -590,21 +753,29 @@ def create_app(cfg: Config, with_scheduler: bool = False, bind_host: str | None 
         path = cfg.dir("logs_dir") / f"{scan_id}.log"
 
         async def gen():
+            # A reconnecting or late viewer starts from the last ~256 KB instead of replaying a multi-MB log;
+            # the full log is available page by page from /log/lines and as a download.
             pos, buf, waited = 0, "", 0.0
+            if path.exists() and path.stat().st_size > 262144:
+                pos = path.stat().st_size - 262144
+                with open(path, "rb") as fh:
+                    fh.seek(pos)
+                    pos += len(fh.readline())  # skip the partial first line
             while True:
                 if await request.is_disconnected():
                     return
                 chunk = ""
                 if path.exists():
-                    with open(path, encoding="utf-8", errors="replace") as fh:
+                    with open(path, "rb") as fh:
                         fh.seek(pos)
-                        chunk = fh.read()
-                        pos = fh.tell()
+                        raw = fh.read(4_000_000)  # at most ~4 MB per tick, so a burst of tool output cannot stall the stream
+                        pos += len(raw)
+                        chunk = raw.decode("utf-8", "replace")
                 buf += chunk
                 *lines, buf = buf.split("\n")
-                for line in lines:
-                    if line:
-                        yield f"data: {_json.dumps(line)}\n\n"
+                lines = [l for l in lines if l]
+                for i in range(0, len(lines), 500):  # one event per batch of lines, not per line
+                    yield f"event: batch\ndata: {_json.dumps(lines[i:i + 500])}\n\n"
                 run = manager.runs.get(scan_id)
                 done = run is None or run.status not in ("starting", "running")
                 if done and not chunk:
@@ -646,9 +817,21 @@ def create_app(cfg: Config, with_scheduler: bool = False, bind_host: str | None 
                     "started_at": iso(sc.started_at), "modules": X.module_summaries(s, sc)}
 
     @app.get("/api/scans/{scan_id}/modules/{module}", dependencies=[A])
-    def scan_module_output(scan_id: str, module: str, limit: int = Query(2000, le=20000)):
+    def scan_module_output(scan_id: str, module: str, limit: int = Query(200, ge=1, le=1000)):
         with db.session() as s:
             return X.module_output(s, _scan_or_404(s, scan_id), module, obs_limit=limit)
+
+    @app.get("/api/scans/{scan_id}/modules/{module}/observations", dependencies=[A])
+    def scan_module_observations(scan_id: str, module: str, offset: int = Query(0, ge=0), limit: int = Query(200, ge=1, le=1000),
+                                 q: str | None = Query(None, max_length=300)):
+        with db.session() as s:
+            return X.module_observations(s, _scan_or_404(s, scan_id), module, offset, limit, q)
+
+    @app.get("/api/scans/{scan_id}/modules/{module}/evidence", dependencies=[A])
+    def scan_module_evidence(scan_id: str, module: str, offset: int = Query(0, ge=0), limit: int = Query(200, ge=1, le=1000),
+                             q: str | None = Query(None, max_length=300), kind: str | None = None):
+        with db.session() as s:
+            return X.module_evidence(s, _scan_or_404(s, scan_id), module, offset, limit, q, kind)
 
     @app.get("/api/scans/{scan_id}/modules/{module}/export", dependencies=[A])
     def scan_module_export(scan_id: str, module: str, format: str = "json"):
@@ -714,13 +897,22 @@ def create_app(cfg: Config, with_scheduler: bool = False, bind_host: str | None 
             data = graph(name)
             if format != "json":
                 data = data.get("nodes", []) if isinstance(data, dict) else data
+        elif surface == "endpoints":  # can be hundreds of thousands of rows: streamed straight from the database
+            from fastapi.responses import StreamingResponse
+
+            with db.session() as s:
+                tid = target_id(s, name)
+            return StreamingResponse(X.stream_endpoints(db, tid, format), media_type=X.FORMATS[format],
+                                     headers={"Content-Disposition": f'attachment; filename="reconforge-{name}-endpoints.{format}"'})
         else:
             with db.session() as s:
                 tid = target_id(s, name)
                 sc = s.get(Scan, scan_id) if scan_id else latest_scan(s, tid)
                 if sc is None:
                     raise HTTPException(404, "no scans")
-                d = build_report_data(s, sc.id)
+                d = light_report(s, sc) if not scan_id or scan_id == (latest_scan(s, tid) or sc).id else build_report_data(s, sc.id, light=True)
+            if surface == "full":
+                d = {**d, "note": "Endpoints here are the live ones (archive URLs excluded); export the endpoints surface for all of them."}
             data = d if surface == "full" else d.get(X.REPORT_SURFACES[surface], [])
             if surface == "full" and format != "json":
                 raise HTTPException(400, "the full export is JSON only")
@@ -802,7 +994,9 @@ def create_app(cfg: Config, with_scheduler: bool = False, bind_host: str | None 
                         headers={"Content-Disposition": f'attachment; filename="{root.name}.zip"'})
 
     @app.get("/api/scans/{scan_id}/files/{path:path}", dependencies=[A])
-    def scan_file(scan_id: str, path: str, download: bool = False, head: int | None = Query(None, ge=1, le=20000)):
+    def scan_file(scan_id: str, path: str, download: bool = False, head: int | None = Query(None, ge=1, le=20000),
+                  lines_start: int | None = Query(None, alias="lines", ge=-1), lines_limit: int = Query(500, alias="limit", ge=0, le=2000),
+                  q: str | None = Query(None, max_length=300)):
         root = _scan_files_root(scan_id)
         try:
             f = OUT.safe_file(root, path)
@@ -814,6 +1008,8 @@ def create_app(cfg: Config, with_scheduler: bool = False, bind_host: str | None 
             with open(f, errors="replace") as fh:
                 lines = [next(fh, None) for _ in range(head)]
             return PlainTextResponse(hide_home("".join(l for l in lines if l is not None).encode()))
+        if lines_start is not None and not download:
+            return _lines_json(LINES.window(f, lines_start if lines_start >= 0 else None, lines_limit, q=q))
         return FileResponse(f, media_type="text/plain; charset=utf-8", filename=f.name if download else None,
                             content_disposition_type="attachment" if download else "inline")
 
@@ -913,17 +1109,25 @@ def create_app(cfg: Config, with_scheduler: bool = False, bind_host: str | None 
                 done += 1
             if not done:
                 raise HTTPException(404, "no such observation")
+        data_changed()
         return {"updated": done, "status": body.status}
 
     # -------------------------------------------------------------- search
     @app.get("/api/search", dependencies=[A])
     def search(target: str, q: str = Query(..., min_length=2, max_length=200), limit: int = Query(30, le=100)):
+        from ..db.fastpath import live
+
         with db.session() as s:
             tid = target_id(s, target)
             like = f"%{q}%"
-            rows = s.execute(select(Asset).where(Asset.target_id == tid, Asset.status == "active",
-                                                 Asset.key.ilike(like) | Asset.display.ilike(like))
-                             .order_by(Asset.type, Asset.key).limit(limit)).scalars()
+            types = [t for (t,) in s.execute(select(Asset.type).where(Asset.target_id == tid).distinct()) if t != "endpoint"]
+            rows = list(s.execute(select(Asset).where(Asset.target_id == tid, Asset.status == "active", Asset.type.in_(types),
+                                                      Asset.key.ilike(like) | Asset.display.ilike(like))
+                                  .order_by(Asset.type, Asset.key).limit(limit)).scalars()) if types else []
+            if len(rows) < limit:  # endpoints: match on the URL through the (target, type, status, fp, key) index
+                rows += list(s.execute(select(Asset).where(Asset.target_id == tid, Asset.type == "endpoint", *live(),
+                                                           Asset.key.ilike(like)).order_by(Asset.key)
+                                       .limit(limit - len(rows))).scalars())
             return [{"id": a.id, "type": a.type, "key": a.key, "display": a.display,
                      "severity": (a.attributes or {}).get("severity") if a.type == "finding" else None} for a in rows]
 
@@ -1047,12 +1251,14 @@ def create_app(cfg: Config, with_scheduler: bool = False, bind_host: str | None 
         with db.session() as s:
             tid = target_id(s, name)
             g = build_graph(s, tid, types=types.split(",") if types else None)
+            counts = dict(s.execute(select(Asset.type, func.count()).where(Asset.target_id == tid, Asset.status == "active")
+                                    .group_by(Asset.type)).all())
         if format == "dot":
             return PlainTextResponse(to_dot(g), headers={"Content-Disposition": f"attachment; filename={name}.dot"})
         if format == "graphml":
             return Response(to_graphml(g), media_type="application/xml",
                             headers={"Content-Disposition": f"attachment; filename={name}.graphml"})
-        return to_cytoscape(g)
+        return {**to_cytoscape(g), "type_counts": counts}
 
     # ----------------------------------------------------------- schedules
     @app.get("/api/schedules", dependencies=[A])

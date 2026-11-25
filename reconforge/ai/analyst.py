@@ -359,7 +359,7 @@ def get_provider(cfg, provider: str | None = None, overrides: dict | None = None
 def ai_bundle(cfg, db: Database, scan_id: str) -> dict:
     """Everything needed to run the analysis in any AI chat (ChatGPT, Claude.ai, ...) by copy/paste."""
     with db.session() as s:
-        data = build_report_data(s, scan_id)
+        data = build_report_data(s, scan_id, light=None)
     pack = build_evidence_pack(data, int(cfg.get("ai.max_assets", 400)))
     prompt = (SYSTEM_PROMPT + "\n\nReturn ONLY a JSON object matching this JSON Schema:\n" + json.dumps(OUTPUT_SCHEMA)
               + "\n\nEvidence pack:\n" + json.dumps(pack, default=str))
@@ -372,7 +372,7 @@ def ai_bundle(cfg, db: Database, scan_id: str) -> dict:
 def import_analysis(cfg, db: Database, scan_id: str, raw: dict | str, provider_label: str = "manual import") -> str:
     """Run an externally produced answer through the evidence guard and store it."""
     with db.session() as s:
-        data = build_report_data(s, scan_id)
+        data = build_report_data(s, scan_id, light=None)
     pack = build_evidence_pack(data, int(cfg.get("ai.max_assets", 400)))
     result = _parse_json_object(raw) if isinstance(raw, str) else raw
     clean, rejected = EvidenceGuard(pack).filter(result)
@@ -386,7 +386,7 @@ def import_analysis(cfg, db: Database, scan_id: str, raw: dict | str, provider_l
 def analyze_scan(cfg, db: Database, scan_id: str, provider: Provider | None = None) -> str:
     provider = provider or get_provider(cfg)
     with db.session() as s:
-        data = build_report_data(s, scan_id)
+        data = build_report_data(s, scan_id, light=None)
     pack = build_evidence_pack(data, int(cfg.get("ai.max_assets", 400)))
     guard = EvidenceGuard(pack)
     error = None

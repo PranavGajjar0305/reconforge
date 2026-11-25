@@ -1,19 +1,16 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
 import { useApp } from "../App";
 import { api, withToken } from "../api";
 import Icon from "../components/icons";
-import { Section, Stat } from "../components/ui";
+import LogView from "../components/LogView";
+import { Section, Stat, useDebounced } from "../components/ui";
 
 const STATUS = { completed: "border-slate-700 text-slate-200", running: "border-amber-400 text-amber-200 bg-amber-400/10",
   failed: "border-[#ff3d71]/60 text-[#ff8da0]", skipped: "border-slate-800 text-slate-500 line-through decoration-slate-600", pending: "border-slate-800 text-slate-500" };
 const TRACE = { completed: "done", running: "run", failed: "fail", skipped: "skip", pending: "" };
-const FILTERS = {
-  all: () => true,
-  commands: (l) => /\] (exec:|GET |HEAD |dns |tcp |tls |provider |DNS |dns brute)/.test(l),
-  modules: (l) => /\] (starting|completed|skipped|failed)|rediscovery|scan .* (started|finished)/.test(l),
-  errors: (l) => / (ERROR|WARNING) /.test(l),
-};
+// filtering happens on the server (the log can be millions of lines); see reconforge/api/logview.py
+const FILTERS = ["all", "commands", "modules", "errors"];
 
 function colorize(line) {
   if (/ ERROR /.test(line)) return "text-[#ff8da0]";
@@ -30,58 +27,42 @@ export default function Live() {
   const { scanId } = useParams();
   const { reloadMeta, setTarget } = useApp();
   const nav = useNavigate();
-  const [lines, setLines] = useState([]);
   const [done, setDone] = useState(false);
   const [prog, setProg] = useState(null);
   const [filter, setFilter] = useState("all");
-  const [q, setQ] = useState("");
-  const [follow, setFollow] = useState(true);
+  const [qIn, setQ] = useState("");
+  const q = useDebounced(qIn, 350);
   const [mod, setMod] = useState(null);          // null = all modules
-  const [modLines, setModLines] = useState([]);
-  const box = useRef(null);
+  const [commands, setCommands] = useState(0);
+  const [shownTotal, setShownTotal] = useState(0);
   const start = useRef(Date.now());
   const [now, setNow] = useState(Date.now());
 
   useEffect(() => {
-    setLines([]); setDone(false);
-    const es = new EventSource(withToken(`/api/scans/${scanId}/stream`));
-    let buf = [];
-    const flush = setInterval(() => { if (buf.length) { const b = buf; buf = []; setLines((l) => [...l, ...b].slice(-5000)); } }, 250);
-    es.onmessage = (e) => buf.push(JSON.parse(e.data));
-    es.addEventListener("done", () => { setDone(true); es.close(); reloadMeta(); });
-    es.onerror = () => { es.close(); setDone(true); };
-    return () => { es.close(); clearInterval(flush); };
-  }, [scanId]);
-
-  useEffect(() => {
     let alive = true;
+    setDone(false);
     const tick = async () => {
-      try { const p = await api.progress(scanId); if (alive) { setProg(p); if (p.target) setTarget(p.target); } } catch { /* not created yet */ }
+      try {
+        const p = await api.progress(scanId);
+        if (!alive) return;
+        setProg(p);
+        if (p.target) setTarget(p.target);
+        if (!["running", "starting"].includes(p.status)) { setDone((d) => { if (!d) reloadMeta(); return true; }); }
+      } catch { /* not created yet */ }
+      api.logLines(scanId, { kind: "commands", limit: 0 }).then((w) => alive && setCommands(w.total)).catch(() => {});
       setNow(Date.now());
     };
     tick();
-    const t = setInterval(tick, done ? 10000 : 1000);
+    const t = setInterval(tick, done ? 10000 : 2000);
     return () => { alive = false; clearInterval(t); };
-  }, [scanId, done]);
-
-  // A single module's lines come from the full log on the server (the live stream keeps only recent lines).
-  const modRunning = mod && (prog?.modules || []).some((r) => r.module.split("#")[0] === mod && r.status === "running");
-  useEffect(() => {
-    if (!mod) return;
-    let alive = true;
-    const load = () => api.scanLog(scanId, mod).then((t) => alive && setModLines(t ? t.split("\n") : [])).catch(() => alive && setModLines([]));
-    load();
-    const t = modRunning ? setInterval(load, 2000) : null;
-    return () => { alive = false; t && clearInterval(t); };
-  }, [scanId, mod, modRunning]);
+  }, [scanId, done]); // eslint-disable-line react-hooks/exhaustive-deps
   useEffect(() => { setMod(null); }, [scanId]);
 
-  useEffect(() => { if (follow && box.current) box.current.scrollTop = box.current.scrollHeight; }, [lines, modLines, follow]);
-
-  const source = mod ? modLines : lines;
-  const shown = useMemo(() => source.filter(FILTERS[filter]).filter((l) => !q || l.toLowerCase().includes(q.toLowerCase())), [source, filter, q]);
-  const commands = useMemo(() => lines.filter(FILTERS.commands).length, [lines]);
+  const fetchWindow = useCallback((s, limit) =>
+    api.logLines(scanId, { start: s, limit, module: mod || undefined, kind: filter === "all" ? undefined : filter, q: q || undefined }),
+  [scanId, mod, filter, q]);
   const running = prog && ["running", "starting"].includes(prog.status) && !done;
+  const modRunning = mod && (prog?.modules || []).some((r) => r.module.split("#")[0] === mod && r.status === "running");
   const modState = useMemo(() => {
     const m = {};
     (prog?.modules || []).forEach((r) => {  // merge rediscovery passes (name#2) into one chip
@@ -163,25 +144,22 @@ export default function Live() {
           })}
         </div>
       </Section>
-      <Section title={mod ? `${mod} log — ${shown.length} line(s)` : `Live console — ${shown.length} line(s)`} right={
+      <Section title={`${mod ? `${mod} log` : "Live console"} — ${shownTotal.toLocaleString()} line(s)`} right={
         <div className="flex items-center gap-2 text-xs">
           {mod && <>
             <a className="btn-ghost" href={api.moduleExportUrl(scanId, mod, "txt")} download><Icon name="download" size={13} /> {mod} output</a>
             <Link className="btn-ghost" to={`/output/${scanId}?module=${mod}`}>Inspect results</Link>
           </>}
           <div className="tabs" role="tablist">
-            {Object.keys(FILTERS).map((f) => <button key={f} role="tab" aria-selected={filter === f}
+            {FILTERS.map((f) => <button key={f} role="tab" aria-selected={filter === f}
               className="capitalize" onClick={() => setFilter(f)}>{f}</button>)}
           </div>
-          <input className="input w-40" placeholder="filter text" value={q} onChange={(e) => setQ(e.target.value)} />
-          <label className="flex items-center gap-1"><input type="checkbox" checked={follow} onChange={(e) => setFollow(e.target.checked)} />follow</label>
+          <input className="input w-40" placeholder="filter text" value={qIn} onChange={(e) => setQ(e.target.value)} />
         </div>}>
-        <div ref={box} className="term h-[55vh] text-[11.5px] leading-5">
-          {shown.map((l, i) => <div key={i} className={`whitespace-pre-wrap break-all ${colorize(l)}`}>{l.replace(/^\d{4}-\d\d-\d\d /, "")}</div>)}
-          {mod && !shown.length && <div className="text-slate-500">No log lines for {mod} yet.</div>}
-          {running && (!mod || modRunning) && <div className="animate-pulse text-amber-300">▍</div>}
-          {done && <div className="mt-2 text-slate-300">Run {prog?.status}.</div>}
-        </div>
+        <LogView fetchWindow={fetchWindow} resetKey={`${scanId}|${mod}|${filter}|${q}`} live={!!(running && (!mod || modRunning))}
+                 pollMs={1500} lineClass={colorize} format={(l) => l.replace(/^\d{4}-\d\d-\d\d /, "")} height="55vh"
+                 onTotal={setShownTotal} empty={mod ? `No log lines for ${mod} yet.` : "Waiting for output…"} />
+        {done && <div className="mt-2 text-[12px] text-slate-300">Run {prog?.status}.</div>}
       </Section>
     </div>
   );

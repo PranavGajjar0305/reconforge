@@ -25,14 +25,26 @@ async function request(path, opts = {}) {
   return ct.includes("json") ? res.json() : res.text();
 }
 
+const CACHE = new Map();
+function cached(key, ttl, fn) {
+  const hit = CACHE.get(key);
+  if (hit && Date.now() - hit.at < ttl) return hit.p;
+  const p = fn().catch((e) => { CACHE.delete(key); throw e; });
+  CACHE.set(key, { at: Date.now(), p });
+  if (CACHE.size > 8) CACHE.delete(CACHE.keys().next().value);
+  return p;
+}
+export const dropCache = () => CACHE.clear();
+
 export const api = {
   meta: () => request("/api/meta"),
   overview: (t) => request(`/api/targets/${t}/overview`),
   inventory: (t) => request(`/api/targets/${t}/inventory`),
   assets: (t, params = {}) => request(`/api/targets/${t}/assets?` + new URLSearchParams(params)),
-  reportData: (t, scan) => request(`/api/targets/${t}/report-data` + (scan ? `?scan_id=${scan}` : "")),
+  // Several pages read the same (possibly large) scan summary: keep it for 20 s so switching pages doesn't refetch it.
+  reportData: (t, scan) => cached(`report|${t}|${scan || ""}`, 20000, () => request(`/api/targets/${t}/report-data` + (scan ? `?scan_id=${scan}` : ""))),
   asset: (id) => request(`/api/assets/${id}`),
-  setFP: (id, fp, reason) => request(`/api/assets/${id}/false-positive`, { method: "POST", body: JSON.stringify({ false_positive: fp, reason }) }),
+  setFP: (id, fp, reason) => (dropCache(), request(`/api/assets/${id}/false-positive`, { method: "POST", body: JSON.stringify({ false_positive: fp, reason }) })),
   evidence: (id) => request(`/api/evidence/${id}`),
   scans: (t) => request(`/api/scans?target=${t}`),
   scanLog: (id, module) => request(`/api/scans/${id}/log` + (module ? `?module=${encodeURIComponent(module)}` : "")),
@@ -77,13 +89,23 @@ export const api = {
   screenshotsZipUrl: (t) => withToken(`/api/targets/${encodeURIComponent(t)}/screenshots-zip`),
   evidenceImageUrl: (id) => withToken(`/api/evidence/${id}?raw=1`),
   triage: (t) => request(`/api/targets/${encodeURIComponent(t)}/triage`),
-  setTriage: (id, status, note, ids) => request(`/api/assets/${id}/triage`, { method: "POST", body: JSON.stringify({ status, note, ids }) }),
+  setTriage: (id, status, note, ids) => (dropCache(), request(`/api/assets/${id}/triage`, { method: "POST", body: JSON.stringify({ status, note, ids }) })),
   search: (t, q) => request(`/api/search?target=${encodeURIComponent(t)}&q=${encodeURIComponent(q)}`),
   notifySettings: () => request(`/api/settings/notifications`),
   saveNotify: (body) => request(`/api/settings/notifications`, { method: "PUT", body: JSON.stringify(body) }),
   testNotify: (ch) => request(`/api/settings/notifications/test/${ch}`, { method: "POST" }),
   burpScopeUrl: (t) => withToken(`/api/targets/${encodeURIComponent(t)}/burp-scope`),
+  endpoints: (t, params) => request(`/api/targets/${encodeURIComponent(t)}/endpoints?` + qs(params)),
+  endpointFacets: (t) => request(`/api/targets/${encodeURIComponent(t)}/endpoints/facets`),
+  logLines: (id, params) => request(`/api/scans/${id}/log/lines?` + qs(params)),
+  evidenceLines: (id, params) => request(`/api/evidence/${id}/lines?` + qs(params)),
+  fileLines: (id, path, params) => request(`/api/scans/${id}/files/${path.split("/").map(encodeURIComponent).join("/")}?` + qs({ lines: -1, ...params })),
+  moduleObservations: (id, m, params) => request(`/api/scans/${id}/modules/${encodeURIComponent(m)}/observations?` + qs(params)),
+  moduleEvidence: (id, m, params) => request(`/api/scans/${id}/modules/${encodeURIComponent(m)}/evidence?` + qs(params)),
   findingsReportUrl: (t, format, scan) => withToken(`/api/targets/${encodeURIComponent(t)}/findings-report?format=${format}` + (scan ? `&scan_id=${scan}` : "")),
 };
+
+// query string without empty values; start=null means "the newest lines" and is left out
+export const qs = (params = {}) => new URLSearchParams(Object.entries(params).filter(([, v]) => v !== undefined && v !== null && v !== "")).toString();
 
 export const withToken = (url) => (getToken() ? `${url}${url.includes("?") ? "&" : "?"}token=${encodeURIComponent(getToken())}` : url);

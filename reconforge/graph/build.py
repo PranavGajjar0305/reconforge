@@ -12,7 +12,7 @@ from collections import defaultdict
 from xml.sax.saxutils import escape
 
 import networkx as nx
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from ..db.models import Asset, Relation
@@ -27,22 +27,47 @@ DEFAULT_GRAPH_TYPES = ["domain", "subdomain", "ip", "asn", "provider", "certific
                        "technology", "endpoint", "js_file", "cloud_resource", "third_party", "repository"]
 
 
+GRAPH_ENDPOINT_CAP = 5000  # endpoints drawn at most (live ones first); archive URLs are never graph nodes
+
+
 def build_graph(s: Session, target_id: str, types: list[str] | None = None, include_removed: bool = False,
-                include_fp: bool = False) -> nx.MultiDiGraph:
+                include_fp: bool = False, endpoint_cap: int = GRAPH_ENDPOINT_CAP) -> nx.MultiDiGraph:
+    from ..db.fastpath import not_historical
+    from ..reports.data import BULK_RELATIONS
+
     types = types or DEFAULT_GRAPH_TYPES
-    q = select(Asset).where(Asset.target_id == target_id, Asset.type.in_(types))
+    q = select(Asset).where(Asset.target_id == target_id)
     if not include_removed:
         q = q.where(Asset.status == "active")
     if not include_fp:
         q = q.where(Asset.false_positive.is_(False))
     g = nx.MultiDiGraph()
-    for a in s.execute(q).scalars():
+    g.graph["omitted"] = {}
+
+    def add(a: Asset) -> None:
         g.add_node(a.id, type=a.type, label=_label(a), key=a.key, scope=a.scope, confidence=a.confidence,
                    status=a.status, first_seen=a.first_seen.isoformat(), last_seen=a.last_seen.isoformat())
-    for r in s.execute(select(Relation).where(Relation.target_id == target_id)).scalars():
-        if r.src_id in g and r.dst_id in g:
-            g.add_edge(r.src_id, r.dst_id, key=r.id, id=r.id, type=r.type, confirmed=r.confirmed,
-                       confidence=r.confidence, sources=r.sources, evidence_ids=r.evidence_ids)
+
+    for a in s.execute(q.where(Asset.type.in_([t for t in types if t != "endpoint"]))).scalars():
+        add(a)
+    if "endpoint" in types:
+        d = s.bind.dialect.name
+        n = 0
+        for a in s.execute(q.where(Asset.type == "endpoint", not_historical(d, Asset.attributes))
+                           .order_by(Asset.key).limit(endpoint_cap)).scalars():
+            add(a)
+            n += 1
+        total = s.execute(select(func.count()).select_from(Asset).where(Asset.target_id == target_id, Asset.type == "endpoint",
+                                                                       Asset.status == "active")).scalar() or 0
+        if total > n:
+            g.graph["omitted"]["endpoint"] = {"shown": n, "total": total}
+    rtypes = [t for (t,) in s.execute(select(Relation.type).where(Relation.target_id == target_id).distinct())
+              if t not in BULK_RELATIONS]
+    if rtypes:
+        for r in s.execute(select(Relation).where(Relation.target_id == target_id, Relation.type.in_(rtypes))).scalars():
+            if r.src_id in g and r.dst_id in g:
+                g.add_edge(r.src_id, r.dst_id, key=r.id, id=r.id, type=r.type, confirmed=r.confirmed,
+                           confidence=r.confidence, sources=r.sources, evidence_ids=r.evidence_ids)
     _mark_shared(g)
     return g
 
@@ -94,7 +119,8 @@ def stats(g: nx.MultiDiGraph) -> dict:
             "confirmed_edges": sum(1 for *_, d in g.edges(data=True) if d["confirmed"]),
             "inferred_edges": sum(1 for *_, d in g.edges(data=True) if not d["confirmed"]),
             "components": nx.number_connected_components(und) if und.number_of_nodes() else 0,
-            "shared_infrastructure": [{"label": l, "type": t, "shared_by": n} for l, t, n in shared[:25]]}
+            "shared_infrastructure": [{"label": l, "type": t, "shared_by": n} for l, t, n in shared[:25]],
+            "omitted": g.graph.get("omitted", {})}
 
 
 def to_dot(g: nx.MultiDiGraph) -> str:

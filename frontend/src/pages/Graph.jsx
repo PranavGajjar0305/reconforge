@@ -33,8 +33,9 @@ export default function GraphPage() {
   const [sel, setSel] = useState(null);
   const [focus, setFocus] = useState(null);       // node id to show only its neighborhood
   const [rendered, setRendered] = useState({ shown: 0, total: 0 });
-  const typeParam = useMemo(() => [...DEFAULT_ON, "finding"].join(","), []);
-  const { data, loading, error, reload } = useLoad(() => api.graph(target, typeParam), [target]);
+  // only the switched-on types are fetched; endpoints (can be hundreds of thousands) are capped by the server
+  const typeParam = useMemo(() => [...types, ...(showFindings ? ["finding"] : [])].sort().join(","), [types, showFindings]);
+  const { data, loading, error, reload } = useLoad(() => api.graph(target, typeParam), [target, typeParam]);
   const ref = useRef(null);
   const cyRef = useRef(null);
 
@@ -163,8 +164,9 @@ export default function GraphPage() {
 
   useEffect(() => { cyRef.current?.resize(); }, [sel]);
 
-  if (loading || error) return <Pending loading={loading} error={error} reload={reload} what="Building graph" />;
+  if (!data && (loading || error)) return <Pending loading={loading} error={error} reload={reload} what="Building graph" />;
   const stats = data.stats;
+  const counts = data.type_counts || stats.by_type;  // totals for every type, also the ones switched off
   const toggle = (t) => { const nxt = new Set(types); nxt.has(t) ? nxt.delete(t) : nxt.add(t); setTypes(nxt); };
 
   return (
@@ -176,21 +178,27 @@ export default function GraphPage() {
         )}
         <div className="card">
           <div className="mb-2 flex items-center justify-between text-xs font-semibold text-slate-300">
-            <span>Asset types</span>
+            <span className="flex items-center gap-2">Asset types{loading && <span className="radar active" style={{ "--size": "11px" }} />}</span>
             <button className="font-normal text-slate-500 hover:text-slate-300" onClick={() => setTypes(new Set(DEFAULT_ON))}>all</button>
           </div>
           {DEFAULT_ON.map((t) => (
             <label key={t} className="flex items-center gap-2 py-0.5 text-xs">
               <input type="checkbox" checked={types.has(t)} onChange={() => toggle(t)} />
               <span className="h-2.5 w-2.5 rounded-full" style={{ background: TYPE_COLORS[t] }} />{t}
-              <span className="ml-auto text-slate-500">{stats.by_type[t] || 0}</span>
+              <span className="ml-auto tabular text-slate-500">{(counts[t] || 0).toLocaleString()}</span>
             </label>
           ))}
           <label className="flex items-center gap-2 py-0.5 text-xs">
             <input type="checkbox" checked={showFindings} onChange={() => setShowFindings(!showFindings)} />
             <span className="h-2.5 w-2.5 rounded-full" style={{ background: TYPE_COLORS.finding }} />finding
-            <span className="ml-auto text-slate-500">{stats.by_type.finding || 0}</span>
+            <span className="ml-auto tabular text-slate-500">{(counts.finding || 0).toLocaleString()}</span>
           </label>
+          {stats.omitted?.endpoint && (
+            <p className="mt-2 text-[11px] leading-snug text-amber-200/80">
+              Graph uses {stats.omitted.endpoint.shown.toLocaleString()} live endpoints of {stats.omitted.endpoint.total.toLocaleString()};
+              the rest (mostly archive URLs) are on the Endpoints page.
+            </p>
+          )}
         </div>
         <div className="card text-xs">
           <div className="mb-1 font-semibold text-slate-300">Layout</div>

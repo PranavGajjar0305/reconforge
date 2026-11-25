@@ -1,7 +1,22 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useApp } from "../App";
 import { api } from "../api";
-import { EvidenceLink, Pending, SEV_COLOR, useLoad } from "../components/ui";
+import { EvidenceLink, Pending, SEV_COLOR, useDebounced, useLoad } from "../components/ui";
+
+const STEP = 150;  // rows added each time you reach the end of the list
+
+/* Calls onVisible when scrolled into view: renders the next rows only when they are needed. */
+function MoreRows({ onVisible, colSpan, label }) {
+  const ref = useRef(null);
+  useEffect(() => {
+    const el = ref.current;
+    if (!el) return undefined;
+    const io = new IntersectionObserver((e) => e[0].isIntersecting && onVisible(), { rootMargin: "400px" });
+    io.observe(el);
+    return () => io.disconnect();
+  }, [onVisible]);
+  return <tr ref={ref}><td colSpan={colSpan} className="text-center"><button className="btn-ghost my-1" onClick={onVisible}>{label}</button></td></tr>;
+}
 
 const SEVS = ["critical", "high", "medium", "low", "info"];
 const STATE_LABEL = { new: "New", investigating: "Investigating", confirmed: "Confirmed", false_positive: "False positive",
@@ -82,7 +97,10 @@ export default function Triage() {
   const [items, setItems] = useState(null);
   const [sev, setSev] = useState(new Set(SEVS.filter((s) => s !== "info")));
   const [state, setState] = useState("open");
-  const [q, setQ] = useState("");
+  const [qIn, setQ] = useState("");
+  const q = useDebounced(qIn, 250);
+  const [limit, setLimit] = useState(STEP);
+  const [open, setOpen] = useState(new Set());  // groups shown in full
   const [host, setHost] = useState(null);
   const [groupBy, setGroupBy] = useState("none");
   const [sel, setSel] = useState(new Set());
@@ -111,6 +129,21 @@ export default function Triage() {
     shown.forEach((i) => { const k = (groupBy === "host" ? i.host : groupBy === "category" ? i.category : i.title) || "—"; (g[k] = g[k] || []).push(i); });
     return Object.entries(g).sort((a, b) => b[1].reduce((n, i) => n + i.score, 0) - a[1].reduce((n, i) => n + i.score, 0));
   }, [shown, groupBy]);
+  useEffect(() => { setLimit(STEP); }, [sev, state, host, q, groupBy]);
+  // render budget: rows (and group headers) up to `limit`; each group shows 10 rows unless opened
+  const page = useMemo(() => {
+    const out = [];
+    let used = 0, cut = false;
+    for (const [g, rows] of grouped) {
+      if (used >= limit) { cut = true; break; }
+      const cap = !g || open.has(g) ? rows.length : Math.min(10, rows.length);
+      const take = rows.slice(0, Math.max(0, Math.min(cap, limit - used - (g ? 1 : 0))));
+      if (take.length < cap) cut = true;
+      out.push([g, rows, take]);
+      used += take.length + (g ? 1 : 0);
+    }
+    return { groups: out, more: cut, rowsShown: out.reduce((n, x) => n + x[2].length, 0) };
+  }, [grouped, limit, open]);
 
   if (loading || error) return <Pending loading={loading} error={error} reload={reload} />;
   const setStatus = async (ids, status, note) => {
@@ -155,7 +188,7 @@ export default function Triage() {
             </div>
           </div>
           <div className="flex flex-wrap items-center gap-2">
-            <input className="input w-72" placeholder="Search title, subject, rule, CVE" value={q} onChange={(e) => setQ(e.target.value)} />
+            <input className="input w-72" placeholder="Search title, subject, rule, CVE" value={qIn} onChange={(e) => setQ(e.target.value)} />
             <select className="input" value={state} onChange={(e) => setState(e.target.value)} aria-label="Status">
               <option value="open">Open ({all.filter((i) => !CLOSED.has(i.status)).length})</option>
               <option value="all">All states ({all.length})</option>
@@ -182,9 +215,11 @@ export default function Triage() {
                 <th>Priority</th><th>Severity</th><th>Observation</th><th>Subject</th><th>Status</th>
               </tr></thead>
               <tbody>
-                {grouped.map(([g, rows]) => [
-                  g ? <tr key={`g-${g}`}><td colSpan={6} className="bg-slate-950/60 font-mono text-[11.5px] text-indigo-200">{g} <span className="text-slate-500">· {rows.length}</span></td></tr> : null,
-                  ...rows.slice(0, 400).map((i) => (
+                {page.groups.map(([g, rows, take]) => [
+                  g ? <tr key={`g-${g}`}><td colSpan={6} className="bg-slate-950/60 font-mono text-[11.5px] text-indigo-200">{g} <span className="text-slate-500">· {rows.length}</span>
+                    {rows.length > 10 && <button className="btn-ghost ml-2 py-0 text-[11px]" onClick={() => { const n = new Set(open); n.has(g) ? n.delete(g) : n.add(g); setOpen(n); }}>
+                      {open.has(g) ? "show first 10" : `show all ${rows.length}`}</button>}</td></tr> : null,
+                  ...take.map((i) => (
                     <tr key={i.id} className={`cursor-pointer ${focus === i.id ? "bg-indigo-400/[0.07]" : ""} ${CLOSED.has(i.status) ? "opacity-55" : ""}`} onClick={() => setFocus(i.id)}>
                       <td onClick={(e) => e.stopPropagation()}><input type="checkbox" aria-label={`Select ${i.title}`} checked={sel.has(i.id)}
                         onChange={() => { const n = new Set(sel); n.has(i.id) ? n.delete(i.id) : n.add(i.id); setSel(n); }} /></td>
@@ -197,6 +232,8 @@ export default function Triage() {
                     </tr>
                   )),
                 ])}
+                {page.more && <MoreRows colSpan={6} onVisible={() => setLimit((l) => l + STEP)}
+                                        label={`Showing ${page.rowsShown.toLocaleString()} of ${shown.length.toLocaleString()} — load more`} />}
               </tbody>
             </table>
             {!shown.length && <div className="p-6 text-center text-[13px] text-slate-500">Nothing matches these filters.</div>}

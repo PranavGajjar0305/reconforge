@@ -11,7 +11,7 @@ import re
 from collections import Counter, defaultdict
 from pathlib import Path
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 
 from ..db.models import Asset, Evidence, ModuleRun, Observation, Scan
 from ..util import iso
@@ -104,14 +104,29 @@ def render(data, fmt: str, title: str) -> str:
 LOG_TAG = re.compile(r"\[([a-z0-9_\-]+)(?:#\d+)?\]", re.I)
 
 
+_LOG_COUNTS: dict[str, tuple] = {}
+
+
 def log_counts(log_path: str | None) -> Counter:
-    c: Counter = Counter()
-    if log_path and Path(log_path).exists():
-        with open(log_path, errors="replace") as fh:
-            for line in fh:
-                m = LOG_TAG.search(line)
+    """Lines per module tag. Incremental: a growing log is only read from where the last call stopped."""
+    if not log_path or not Path(log_path).exists():
+        return Counter()
+    st = Path(log_path).stat()
+    ident, pos, c = _LOG_COUNTS.get(log_path, (None, 0, Counter()))
+    if ident != (st.st_ino, st.st_dev) or st.st_size < pos:
+        pos, c = 0, Counter()
+    if st.st_size > pos:
+        c = Counter(c)
+        with open(log_path, "rb") as fh:
+            fh.seek(pos)
+            for raw in fh:
+                if not raw.endswith(b"\n"):
+                    break
+                pos += len(raw)
+                m = LOG_TAG.search(raw.decode("utf-8", "replace"))
                 if m:
                     c[m.group(1)] += 1
+        _LOG_COUNTS[log_path] = ((st.st_ino, st.st_dev), pos, c)
     return c
 
 
@@ -134,11 +149,8 @@ def _run(r: ModuleRun) -> dict:
 
 def module_summaries(s, sc: Scan) -> list[dict]:
     runs = list(s.execute(select(ModuleRun).where(ModuleRun.scan_id == sc.id).order_by(ModuleRun.id)).scalars())
-    ev = Counter(m for (m,) in s.execute(select(Evidence.module).where(Evidence.scan_id == sc.id)).all())
-    by_type: dict[str, Counter] = defaultdict(Counter)
-    for mod, typ in s.execute(select(Observation.module, Asset.type).join(Asset, Asset.id == Observation.asset_id)
-                              .where(Observation.scan_id == sc.id)).all():
-        by_type[mod][typ] += 1
+    ev = dict(s.execute(select(Evidence.module, func.count()).where(Evidence.scan_id == sc.id).group_by(Evidence.module)).all())
+    by_type = module_type_counts(s, sc)
     lines = log_counts(sc.log_path)
     out: dict[str, dict] = {}
     for r in runs:
@@ -163,33 +175,174 @@ def module_summaries(s, sc: Scan) -> list[dict]:
     return sorted(out.values(), key=lambda d: (order.get(d["module"], 999), d.get("started_at") or ""))
 
 
-def module_output(s, sc: Scan, module: str, obs_limit: int = 2000, full: bool = False) -> dict:
+_TYPE_COUNTS: dict[str, tuple] = {}
+TYPE_COUNT_REFRESH = 30.0  # seconds between recounts while a scan keeps adding results
+
+
+def module_type_counts(s, sc: Scan) -> dict[str, Counter]:
+    """Results per module and asset type. Joining every observation to its asset is the expensive part on a large
+    scan, so it is cached and only recomputed when the scan's result count changed (at most every 30 s while it runs)."""
+    import time
+
+    n = s.execute(select(func.count()).select_from(Observation).where(Observation.scan_id == sc.id)).scalar() or 0
+    cached = _TYPE_COUNTS.get(sc.id)
+    if cached and (cached[0] == n or time.time() - cached[1] < TYPE_COUNT_REFRESH):
+        return cached[2]
+    by_type: dict[str, Counter] = defaultdict(Counter)
+    rows = None
+    if s.bind.dialect.name == "sqlite":  # index-only join: 1.3M results in ~1 s instead of minutes reading full rows
+        from sqlalchemy import text
+        from sqlalchemy.exc import OperationalError
+
+        try:
+            rows = s.execute(text("SELECT o.module, a.type, count(*) FROM observations o INDEXED BY ix_obs_scan_module_asset "
+                                  "JOIN assets a INDEXED BY ix_asset_id_type ON a.id = o.asset_id "
+                                  "WHERE o.scan_id = :sid GROUP BY o.module, a.type"), {"sid": sc.id}).all()
+        except OperationalError:  # indexes not created yet
+            rows = None
+    if rows is None:
+        rows = s.execute(select(Observation.module, Asset.type, func.count()).join(Asset, Asset.id == Observation.asset_id)
+                         .where(Observation.scan_id == sc.id).group_by(Observation.module, Asset.type)).all()
+    for mod, typ, cnt in rows:
+        by_type[mod][typ] += cnt
+    _TYPE_COUNTS[sc.id] = (n, time.time(), by_type)
+    if len(_TYPE_COUNTS) > 32:
+        _TYPE_COUNTS.pop(next(iter(_TYPE_COUNTS)))
+    return by_type
+
+
+def _obs_row(o: Observation, a: Asset) -> dict:
+    return {"asset_id": a.id, "type": a.type, "key": a.key, "display": a.display, "scope": a.scope,
+            "source": o.source, "confidence": round(o.confidence or 0, 2), "observed_at": iso(o.observed_at),
+            "evidence_id": o.evidence_id, "data": {k: v for k, v in (o.data or {}).items() if not str(k).startswith("_")}}
+
+
+def module_observations(s, sc: Scan, module: str, offset: int = 0, limit: int = 200, q: str | None = None) -> dict:
+    """One page of a module's results, in the order they were recorded."""
+    base = (select(Observation, Asset).join(Asset, Asset.id == Observation.asset_id)
+            .where(Observation.scan_id == sc.id, Observation.module == module))
+    if q:
+        like = f"%{q.strip()}%"
+        base = base.where(Asset.key.ilike(like) | Asset.display.ilike(like))
+        total = s.execute(select(func.count()).select_from(base.subquery())).scalar() or 0
+    else:
+        total = s.execute(select(func.count()).select_from(Observation)
+                          .where(Observation.scan_id == sc.id, Observation.module == module)).scalar() or 0
+    limit = max(0, min(limit, 1000))
+    if q:
+        rows = s.execute(base.order_by(Observation.id).offset(max(0, offset)).limit(limit)).all()
+    else:  # pick the page's ids from the index first, then load only those rows (fast at any offset)
+        ids = [i for (i,) in s.execute(select(Observation.id).where(Observation.scan_id == sc.id, Observation.module == module)
+                                       .order_by(Observation.id).offset(max(0, offset)).limit(limit)).all()]
+        rows = s.execute(base.where(Observation.id.in_(ids)).order_by(Observation.id)).all() if ids else []
+    return {"total": total, "offset": offset, "rows": [_obs_row(o, a) for o, a in rows]}
+
+
+def _evidence_size(content_len, path) -> int:
+    if content_len:
+        return int(content_len)
+    if path and Path(path).exists():
+        return Path(path).stat().st_size
+    return 0
+
+
+def module_evidence(s, sc: Scan, module: str, offset: int = 0, limit: int = 200, q: str | None = None,
+                    kind: str | None = None) -> dict:
+    """One page of a module's evidence: metadata and size only; content is read through the line viewer."""
+    cond = [Evidence.scan_id == sc.id, Evidence.module == module]
+    if kind:
+        cond.append(Evidence.kind == kind)
+    if q:
+        cond.append(Evidence.summary.ilike(f"%{q.strip()}%") | Evidence.id.ilike(f"%{q.strip()}%"))
+    total = s.execute(select(func.count()).select_from(Evidence).where(*cond)).scalar() or 0
+    rows = s.execute(select(Evidence.id, Evidence.kind, Evidence.summary, Evidence.created_at, Evidence.path,
+                            func.length(Evidence.content).label("clen"))
+                     .where(*cond).order_by(Evidence.created_at, Evidence.id).offset(max(0, offset))
+                     .limit(max(0, min(limit, 1000)))).all()
+    return {"total": total, "offset": offset,
+            "rows": [{"id": r.id, "kind": r.kind, "summary": r.summary, "created_at": iso(r.created_at), "has_file": bool(r.path),
+                      "size": _evidence_size(r.clen, r.path)} for r in rows]}
+
+
+def module_output(s, sc: Scan, module: str, obs_limit: int = 200, full: bool = False) -> dict:
+    """Module summary plus the first page of results and evidence. `full` (downloads) includes everything."""
     runs = [_run(r) for r in s.execute(select(ModuleRun).where(ModuleRun.scan_id == sc.id, ModuleRun.module == module)
                                        .order_by(ModuleRun.id)).scalars()]
+    if not full:
+        types = module_type_counts(s, sc).get(module, Counter())
+        obs = module_observations(s, sc, module, 0, obs_limit)
+        ev = module_evidence(s, sc, module, 0, 200)
+        raw = module_evidence(s, sc, module, 0, 500, kind="tool_output")
+        return {"scan_id": sc.id, "module": module, "runs": runs, "observations_total": obs["total"],
+                "asset_types": dict(types), "observations": obs["rows"], "evidence_total": ev["total"],
+                "evidence": ev["rows"], "raw_outputs": raw["rows"], "log": None}
     q = (select(Observation, Asset).join(Asset, Asset.id == Observation.asset_id)
          .where(Observation.scan_id == sc.id, Observation.module == module).order_by(Asset.type, Asset.key))
     obs = []
     types: Counter = Counter()
     for o, a in s.execute(q).all():
         types[a.type] += 1
-        if full or len(obs) < obs_limit:
-            obs.append({"asset_id": a.id, "type": a.type, "key": a.key, "display": a.display, "scope": a.scope,
-                        "source": o.source, "confidence": round(o.confidence or 0, 2), "observed_at": iso(o.observed_at),
-                        "evidence_id": o.evidence_id,
-                        "data": {k: v for k, v in (o.data or {}).items() if not str(k).startswith("_")}})
+        obs.append(_obs_row(o, a))
     evidence = []
     for e in s.execute(select(Evidence).where(Evidence.scan_id == sc.id, Evidence.module == module)
                        .order_by(Evidence.created_at)).scalars():
         item = {"id": e.id, "kind": e.kind, "summary": e.summary, "created_at": iso(e.created_at), "has_file": bool(e.path),
                 "size": len(e.content or "") if e.content else (Path(e.path).stat().st_size if e.path and Path(e.path).exists() else 0)}
-        if full or e.kind == "tool_output":
-            item["content"] = (e.content or "")[: (5_000_000 if full else 200_000)]
-            if not e.content and e.path and Path(e.path).exists() and not e.path.endswith(".png"):
-                item["content"] = Path(e.path).read_text(errors="replace")[: (5_000_000 if full else 200_000)]
+        item["content"] = (e.content or "")[:5_000_000]
+        if not e.content and e.path and Path(e.path).exists() and not e.path.endswith(".png"):
+            item["content"] = Path(e.path).read_text(errors="replace")[:5_000_000]
         evidence.append(item)
     return {"scan_id": sc.id, "module": module, "runs": runs, "observations_total": sum(types.values()),
             "asset_types": dict(types), "observations": obs, "evidence": evidence,
-            "log": module_log(sc.log_path, module, 5_000_000 if full else 400_000)}
+            "log": module_log(sc.log_path, module, 5_000_000)}
+
+
+ENDPOINT_COLUMNS = ["url", "kind", "host", "status", "historical", "archived_at", "archived_status", "api_version",
+                    "methods_documented", "methods_observed", "discovered_via", "scope", "first_seen", "last_seen"]
+
+
+def stream_endpoints(db, target_id: str, fmt: str):
+    """Every endpoint of a target as CSV / JSON / Markdown, streamed in batches (no full list held in memory)."""
+    from ..db.fastpath import live
+
+    def rows():
+        with db.session() as s:
+            q = (select(Asset.key, Asset.attributes, Asset.scope, Asset.first_seen, Asset.last_seen)
+                 .where(Asset.target_id == target_id, Asset.type == "endpoint", *live()).order_by(Asset.key)
+                 .execution_options(yield_per=5000))
+            for key, at, scope, first, last in s.execute(q):
+                at = at or {}
+                yield {"url": key, "kind": at.get("kind"), "host": at.get("host"), "status": at.get("status"),
+                       "historical": bool(at.get("historical")), "archived_at": at.get("archived_at"),
+                       "archived_status": at.get("archived_status"), "api_version": at.get("api_version"),
+                       "methods_documented": at.get("methods_documented") or [], "methods_observed": at.get("methods_observed") or [],
+                       "discovered_via": at.get("discovered_via") or [], "scope": scope, "first_seen": iso(first), "last_seen": iso(last)}
+
+    def cell(v):
+        return "|".join(map(str, v)) if isinstance(v, list) else ("" if v is None else str(v))
+
+    if fmt == "json":
+        yield "[\n"
+        first = True
+        for r in rows():
+            yield ("" if first else ",\n") + json.dumps(r, default=str)
+            first = False
+        yield "\n]\n"
+    elif fmt == "md":
+        yield "| " + " | ".join(ENDPOINT_COLUMNS) + " |\n|" + "---|" * len(ENDPOINT_COLUMNS) + "\n"
+        for r in rows():
+            yield "| " + " | ".join(cell(r[c]).replace("|", "\\|") for c in ENDPOINT_COLUMNS) + " |\n"
+    else:
+        buf = io.StringIO()
+        w = csv.writer(buf)
+        w.writerow(ENDPOINT_COLUMNS)
+        for i, r in enumerate(rows()):
+            w.writerow([cell(r[c]) for c in ENDPOINT_COLUMNS])
+            if i % 2000 == 1999:
+                yield buf.getvalue()
+                buf.seek(0)
+                buf.truncate()
+        yield buf.getvalue()
 
 
 def module_bundle(out: dict, fmt: str) -> str:

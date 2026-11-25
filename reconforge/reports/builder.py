@@ -39,7 +39,7 @@ def generate_reports(cfg, db: Database, scan_id: str, formats: list[str] | None 
     formats = formats or cfg.get("reports.formats", ["markdown", "html", "json"])
     secs = {**cfg.get("reports.sections", {}), **(sections or {})}
     with db.session() as s:
-        data = build_report_data(s, scan_id)
+        data = build_report_data(s, scan_id, light=None)  # huge scans: archive URLs stay in the output files
         scan = s.get(Scan, scan_id)
         g = build_graph(s, scan.target_id)
     out = out_dir or (cfg.dir("reports_dir") / data["scan"]["target"] / scan_id)

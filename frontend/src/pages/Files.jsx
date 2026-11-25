@@ -1,9 +1,10 @@
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { useNavigate, useParams, useSearchParams } from "react-router-dom";
 import { useApp } from "../App";
 import { api } from "../api";
 import Icon from "../components/icons";
-import { Empty, Loading, Pending } from "../components/ui";
+import LogView from "../components/LogView";
+import { Empty, Loading, Pending, useDebounced } from "../components/ui";
 
 const GROUP_INFO = {
   "": "Index",
@@ -31,13 +32,11 @@ function ScanPicker({ target, scanId, onPick }) {
 }
 
 function Preview({ scanId, file }) {
-  const [text, setText] = useState(null);
-  const [err, setErr] = useState(null);
-  useEffect(() => {
-    setText(null); setErr(null);
-    if (!file || file.kind === "image") return;
-    api.fileHead(scanId, file.path, 500).then(setText).catch(setErr);
-  }, [scanId, file?.path]);
+  const [qIn, setQ] = useState("");
+  const q = useDebounced(qIn, 350);
+  useEffect(() => setQ(""), [scanId, file?.path]);
+  const fetchWindow = useCallback((start, limit) => api.fileLines(scanId, file.path, { lines: start ?? -1, limit, q: q || undefined }),
+    [scanId, file?.path, q]); // eslint-disable-line react-hooks/exhaustive-deps
   if (!file) return <Empty>Select a file to preview it.</Empty>;
   return (
     <div className="hud flex h-full min-h-[60vh] flex-col">
@@ -47,6 +46,7 @@ function Preview({ scanId, file }) {
           <div className="text-[11.5px] text-slate-500">{fmtSize(file.size)}</div>
         </div>
         <div className="flex gap-1.5">
+          {file.kind !== "image" && <input className="input w-48 py-1 text-[12px]" placeholder="Filter lines" value={qIn} onChange={(e) => setQ(e.target.value)} />}
           <a className="btn px-2.5 py-1 text-[12px]" href={api.fileUrl(scanId, file.path)} target="_blank" rel="noreferrer">Open</a>
           <a className="btn px-2.5 py-1 text-[12px]" href={api.fileUrl(scanId, file.path, true)} download><Icon name="download" size={12} /> Download</a>
         </div>
@@ -54,8 +54,9 @@ function Preview({ scanId, file }) {
       <div className="flex-1 p-3">
         {file.kind === "image" ? (
           <img alt={file.path} className="max-h-[70vh] w-full rounded-[2px] border border-slate-800 object-contain" src={api.fileUrl(scanId, file.path)} />
-        ) : err ? <div className="text-[13px] text-[#ff8da0]">{err.message}</div> : text === null ? <Loading /> : (
-          <pre className="term h-[64vh] whitespace-pre text-[11.5px]">{text || "(empty)"}{text && text.split("\n").length >= 500 ? "\n… first 500 lines shown — download for the full file" : ""}</pre>
+        ) : (
+          <LogView fetchWindow={fetchWindow} resetKey={`${scanId}|${file.path}|${q}`} tail={false} height="62vh"
+                   empty={q ? "No lines match the filter." : "(empty)"} />
         )}
       </div>
     </div>

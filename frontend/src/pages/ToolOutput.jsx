@@ -1,9 +1,10 @@
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { Link, useNavigate, useParams, useSearchParams } from "react-router-dom";
 import { useApp } from "../App";
 import { api } from "../api";
 import Icon from "../components/icons";
-import { Empty, EvidenceLink, Loading, Pending, Tabs, TYPE_COLORS } from "../components/ui";
+import LogView from "../components/LogView";
+import { Empty, EvidenceLink, Loading, Pending, ServerTable, Tabs, TYPE_COLORS, useDebounced } from "../components/ui";
 
 const DIODE = { completed: "ok", running: "live", failed: "bad", skipped: "off", pending: "off" };
 const STATUS_TEXT = { completed: "text-emerald-300", running: "text-amber-300", failed: "text-[#ff8da0]", skipped: "text-slate-500", pending: "text-slate-500" };
@@ -39,27 +40,53 @@ function ScanPicker({ target, scanId, onPick }) {
   );
 }
 
+function RawOutput({ items }) {
+  const [pick, setPick] = useState(items[0]?.id);
+  const [qIn, setQ] = useState("");
+  const q = useDebounced(qIn, 350);
+  useEffect(() => { if (!items.some((e) => e.id === pick)) setPick(items[0]?.id); }, [items]); // eslint-disable-line react-hooks/exhaustive-deps
+  const fetchWindow = useCallback((start, limit) => api.evidenceLines(pick, { start, limit, q: q || undefined }), [pick, q]);
+  const cur = items.find((e) => e.id === pick);
+  return (
+    <div>
+      <div className="mb-2 flex flex-wrap items-center gap-2">
+        <select className="input max-w-xl" value={pick || ""} onChange={(e) => setPick(e.target.value)} aria-label="Raw output">
+          {items.map((e) => <option key={e.id} value={e.id}>{e.summary || e.id}{e.size ? ` · ${(e.size / 1024).toFixed(1)} KB` : ""}</option>)}
+        </select>
+        {cur && <EvidenceLink id={cur.id}>details</EvidenceLink>}
+        {cur && <a className="btn-ghost" href={api.evidenceImageUrl(cur.id)} target="_blank" rel="noreferrer"><Icon name="download" size={12} /> full file</a>}
+        <input className="input ml-auto w-56" placeholder="Filter lines" value={qIn} onChange={(e) => setQ(e.target.value)} />
+      </div>
+      {pick && <LogView fetchWindow={fetchWindow} resetKey={`${pick}|${q}`} tail={false} lineClass={lineClass} height="46vh"
+                        empty={q ? "No lines match the filter." : "(empty)"} />}
+    </div>
+  );
+}
+
 function ModuleDetail({ scanId, module, running, openAsset }) {
   const [data, setData] = useState(null);
   const [error, setError] = useState(null);
   const [tab, setTab] = useState("console");
-  const [q, setQ] = useState("");
-  useEffect(() => { setData(null); setError(null); setQ(""); }, [scanId, module]);
-  useEffect(() => {
+  const [qIn, setQ] = useState("");
+  const q = useDebounced(qIn, 350);
+  const [consoleTotal, setConsoleTotal] = useState(null);
+  useEffect(() => { setData(null); setError(null); setQ(""); setConsoleTotal(null); }, [scanId, module]);
+  useEffect(() => {  // summary only (counts, runs, first page); the tabs below load their own pages
     let alive = true;
     const load = () => api.moduleOutput(scanId, module).then((d) => alive && setData(d)).catch((e) => alive && setError(e));
     load();
-    const t = running ? setInterval(load, 3000) : null;
+    const t = running ? setInterval(load, 5000) : null;
     return () => { alive = false; t && clearInterval(t); };
   }, [scanId, module, running]);
 
-  const logLines = useMemo(() => (data?.log || "").split("\n").filter((l) => l && (!q || l.toLowerCase().includes(q.toLowerCase()))), [data, q]);
-  const obs = useMemo(() => (data?.observations || []).filter((o) => !q || JSON.stringify(o).toLowerCase().includes(q.toLowerCase())), [data, q]);
-  const raw = (data?.evidence || []).filter((e) => e.kind === "tool_output");
+  const fetchConsole = useCallback((start, limit) => api.logLines(scanId, { start, limit, module, q: q || undefined }), [scanId, module, q]);
+  const fetchObs = useCallback(({ offset, limit, q: qq }) => api.moduleObservations(scanId, module, { offset, limit, q: qq }), [scanId, module]);
+  const fetchEv = useCallback(({ offset, limit, q: qq }) => api.moduleEvidence(scanId, module, { offset, limit, q: qq }), [scanId, module]);
 
   if (error) return <Pending error={error} reload={() => setError(null)} />;
   if (!data) return <Loading what={`Loading ${module} output`} />;
   const r = data.runs[data.runs.length - 1] || {};
+  const raw = data.raw_outputs || [];
   return (
     <div className="hud flex min-h-[70vh] flex-col">
       <div className="hud-head flex-wrap">
@@ -78,89 +105,63 @@ function ModuleDetail({ scanId, module, running, openAsset }) {
         </div>
       </div>
       <dl className="grid grid-cols-2 gap-x-6 gap-y-2 border-b border-slate-800 px-4 py-3 text-[12.5px] md:grid-cols-5">
-        <div><dt className="text-slate-500">Results</dt><dd className="readout text-[20px] text-slate-50">{data.observations_total}</dd></div>
-        <div><dt className="text-slate-500">Evidence items</dt><dd className="readout text-[20px] text-slate-50">{data.evidence.length}</dd></div>
+        <div><dt className="text-slate-500">Results</dt><dd className="readout text-[20px] text-slate-50">{data.observations_total.toLocaleString()}</dd></div>
+        <div><dt className="text-slate-500">Evidence items</dt><dd className="readout text-[20px] text-slate-50">{(data.evidence_total ?? data.evidence.length).toLocaleString()}</dd></div>
         <div><dt className="text-slate-500">Duration</dt><dd className="readout text-[20px] text-slate-50">{fmtDur(data.runs.reduce((a, x) => a + (x.duration_seconds || 0), 0) || null)}</dd></div>
         <div><dt className="text-slate-500">Passes</dt><dd className="readout text-[20px] text-slate-50">{data.runs.length}</dd></div>
         <div><dt className="text-slate-500">Engine</dt><dd className="mt-1 font-mono text-[12.5px] text-slate-200">{r.tool || "builtin"}</dd></div>
-        {r.command && <div className="col-span-2 md:col-span-5"><dt className="text-slate-500">Command</dt><dd className="mono mt-0.5 text-indigo-200">{r.command}</dd></div>}
+        {r.command && <div className="col-span-2 md:col-span-5"><dt className="text-slate-500">Command</dt><dd className="mono mt-0.5 break-all text-indigo-200">{r.command}</dd></div>}
         {r.reason && <div className="col-span-2 md:col-span-5"><dt className="text-slate-500">Note</dt><dd className="mt-0.5 text-slate-300">{r.reason}</dd></div>}
         {Object.keys(data.asset_types).length > 0 && (
           <div className="col-span-2 flex flex-wrap items-center gap-1.5 md:col-span-5">
             {Object.entries(data.asset_types).sort((a, b) => b[1] - a[1]).map(([t, n]) => (
               <span key={t} className="pill" style={{ borderColor: (TYPE_COLORS[t] || "#5d7397") + "66" }}>
-                <span style={{ color: TYPE_COLORS[t] }}>{t.replace("_", " ")}</span> {n}
+                <span style={{ color: TYPE_COLORS[t] }}>{t.replace("_", " ")}</span> {n.toLocaleString()}
               </span>
             ))}
           </div>
         )}
       </dl>
       <div className="flex flex-wrap items-center gap-2 px-4 pt-3">
-        <Tabs value={tab} onChange={setTab} items={[["console", `Console (${(data.log || "").split("\n").filter(Boolean).length})`],
-          ["results", `Results (${data.observations_total})`], ["evidence", `Evidence (${data.evidence.length})`],
+        <Tabs value={tab} onChange={setTab} items={[["console", `Console${consoleTotal !== null ? ` (${consoleTotal.toLocaleString()})` : ""}`],
+          ["results", `Results (${data.observations_total.toLocaleString()})`], ["evidence", `Evidence (${(data.evidence_total ?? data.evidence.length).toLocaleString()})`],
           ...(raw.length ? [["raw", `Raw tool output (${raw.length})`]] : [])]} />
-        <input className="input ml-auto w-56" placeholder="Filter this output" value={q} onChange={(e) => setQ(e.target.value)} />
+        {tab === "console" && <input className="input ml-auto w-56" placeholder="Filter console lines" value={qIn} onChange={(e) => setQ(e.target.value)} />}
       </div>
       <div className="flex-1 p-4">
         {tab === "console" && (
-          <div className="term h-[52vh] text-[11.5px] leading-5">
-            {logLines.map((l, i) => <div key={i} className={`whitespace-pre-wrap break-all ${lineClass(l)}`}>{l.replace(/^\d{4}-\d\d-\d\d /, "")}</div>)}
-            {!logLines.length && <div className="text-slate-500">No log lines{q ? " match the filter" : " recorded for this module"}.</div>}
-            {running && r.status === "running" && <div className="animate-pulse text-amber-300">▍</div>}
-          </div>
+          <LogView fetchWindow={fetchConsole} resetKey={`${scanId}|${module}|${q}`} live={running && r.status === "running"}
+                   lineClass={lineClass} format={(l) => l.replace(/^\d{4}-\d\d-\d\d /, "")} height="52vh" onTotal={setConsoleTotal}
+                   empty={q ? "No log lines match the filter." : "No log lines recorded for this module."} />
         )}
         {tab === "results" && (
-          <div className="max-h-[52vh] overflow-auto rounded-[3px] border border-slate-800">
-            <table className="tbl">
-              <thead><tr><th>Type</th><th>Asset</th><th>What this module recorded</th><th>Confidence</th><th>Evidence</th></tr></thead>
-              <tbody>
-                {obs.map((o, i) => (
-                  <tr key={i} className="cursor-pointer" onClick={() => openAsset(o.asset_id)}>
-                    <td className="whitespace-nowrap font-mono text-[11.5px]" style={{ color: TYPE_COLORS[o.type] }}>{o.type}</td>
-                    <td className="min-w-[220px] max-w-[360px] break-all font-mono text-[12px] text-slate-100">{o.display || o.key}</td>
-                    <td className="font-mono text-[11px] text-slate-400">
-                      {Object.entries(o.data).slice(0, 6).map(([k, v]) => (
-                        <div key={k} className="max-w-[460px] truncate"><span className="text-slate-500">{k.replace(/^\+/, "")}:</span> {typeof v === "object" ? JSON.stringify(v) : String(v)}</div>
-                      ))}
-                    </td>
-                    <td className="tabular text-slate-300">{o.confidence}</td>
-                    <td><EvidenceLink id={o.evidence_id}>view</EvidenceLink></td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-            {!obs.length && <Empty>{q ? "Nothing matches the filter." : "This module recorded no results in this execution."}</Empty>}
-            {data.observations_total > data.observations.length && (
-              <div className="border-t border-slate-800 px-3 py-2 text-[12px] text-slate-500">
-                Showing {data.observations.length} of {data.observations_total}. Download JSON or CSV for all of them.
-              </div>
-            )}
-          </div>
+          <ServerTable fetchPage={fetchObs} resetKey={`${scanId}|${module}`} pageSize={200} onRowClick={(o) => openAsset(o.asset_id)}
+            searchPlaceholder="Search results…" poll={running ? 8000 : 0}
+            empty="This module recorded no results in this execution."
+            columns={[
+              { key: "type", label: "Type", className: "whitespace-nowrap", render: (o) => <span className="font-mono text-[11.5px]" style={{ color: TYPE_COLORS[o.type] }}>{o.type}</span> },
+              { key: "key", label: "Asset", className: "min-w-[220px] max-w-[360px]", render: (o) => <span className="break-all font-mono text-[12px] text-slate-100">{o.display || o.key}</span> },
+              { key: "data", label: "What this module recorded", render: (o) => (
+                <div className="font-mono text-[11px] text-slate-400">
+                  {Object.entries(o.data).slice(0, 6).map(([k, v]) => (
+                    <div key={k} className="max-w-[460px] truncate"><span className="text-slate-500">{k.replace(/^\+/, "")}:</span> {typeof v === "object" ? JSON.stringify(v) : String(v)}</div>
+                  ))}
+                </div>) },
+              { key: "confidence", label: "Confidence", render: (o) => <span className="tabular text-slate-300">{o.confidence}</span> },
+              { key: "evidence_id", label: "Evidence", render: (o) => <EvidenceLink id={o.evidence_id}>view</EvidenceLink> },
+            ]} />
         )}
         {tab === "evidence" && (
-          <div className="max-h-[52vh] overflow-auto rounded-[3px] border border-slate-800">
-            <table className="tbl">
-              <thead><tr><th>Evidence</th><th>Kind</th><th>Summary</th><th>Size</th></tr></thead>
-              <tbody>
-                {data.evidence.filter((e) => !q || JSON.stringify(e).toLowerCase().includes(q.toLowerCase())).map((e) => (
-                  <tr key={e.id}>
-                    <td><EvidenceLink id={e.id} /></td>
-                    <td className="font-mono text-[11.5px] text-slate-400">{e.kind}</td>
-                    <td className="text-slate-200">{e.summary}</td>
-                    <td className="tabular whitespace-nowrap text-slate-500">{e.size ? `${(e.size / 1024).toFixed(1)} KB` : ""}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-            {!data.evidence.length && <Empty>No evidence stored by this module.</Empty>}
-          </div>
+          <ServerTable fetchPage={fetchEv} resetKey={`${scanId}|${module}`} pageSize={200} searchPlaceholder="Search evidence summaries…"
+            empty="No evidence stored by this module."
+            columns={[
+              { key: "id", label: "Evidence", render: (e) => <EvidenceLink id={e.id} /> },
+              { key: "kind", label: "Kind", render: (e) => <span className="font-mono text-[11.5px] text-slate-400">{e.kind}</span> },
+              { key: "summary", label: "Summary", render: (e) => <span className="text-slate-200">{e.summary}</span> },
+              { key: "size", label: "Size", render: (e) => <span className="tabular whitespace-nowrap text-slate-500">{e.size ? `${(e.size / 1024).toFixed(1)} KB` : ""}</span> },
+            ]} />
         )}
-        {tab === "raw" && raw.map((e) => (
-          <div key={e.id} className="mb-3">
-            <div className="mb-1 flex items-center gap-2 text-[12px] text-slate-400">{e.summary}<EvidenceLink id={e.id}>open</EvidenceLink></div>
-            <pre className="term max-h-[46vh] whitespace-pre-wrap break-all">{e.content || "(empty)"}</pre>
-          </div>
-        ))}
+        {tab === "raw" && <RawOutput items={raw} />}
       </div>
     </div>
   );

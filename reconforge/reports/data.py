@@ -29,20 +29,76 @@ def _a(asset: Asset) -> dict:
             "attributes": attrs}
 
 
-def build_report_data(s: Session, scan_id: str, include_fp: bool = False) -> dict:
+API_KINDS = ("api", "graphql", "openapi", "websocket", "api_documentation", "oidc_metadata")
+LIGHT_ENDPOINT_CAP = 20000          # API / document endpoints included in a light build
+BULK_RELATIONS = ("historical_url",)  # archive URL -> host links; can be hundreds of thousands per target
+
+
+def _active(q, include_fp: bool):
+    q = q.where(Asset.status == "active")
+    return q if include_fp else q.where(Asset.false_positive == False)  # noqa: E712 ("=" so the composite indexes apply)
+
+
+def endpoint_summary(s: Session, target_id: str, include_fp: bool = False) -> dict:
+    """Endpoint counts straight from the indexes (no row is loaded)."""
+    from sqlalchemy import func
+
+    from ..db.fastpath import is_historical, jfield
+
+    d = s.bind.dialect.name
+    base = _active(select(func.count()).select_from(Asset).where(Asset.target_id == target_id, Asset.type == "endpoint"), include_fp)
+    kind = jfield(d, Asset.attributes, "kind")
+    by_kind = dict(s.execute(_active(select(kind, func.count()).where(Asset.target_id == target_id, Asset.type == "endpoint"),
+                                     include_fp).group_by(kind)).all())
+    return {"total": s.execute(base).scalar() or 0,
+            "historical": s.execute(base.where(is_historical(d, Asset.attributes))).scalar() or 0,
+            "by_kind": {(k or "unknown"): n for k, n in sorted(by_kind.items(), key=lambda kv: -kv[1])},
+            "api": sum(n for k, n in by_kind.items() if k in API_KINDS)}
+
+
+AUTO_LIGHT_ENDPOINTS = 50000  # light=None (reports, AI) switches to the light build above this many endpoints
+
+
+def build_report_data(s: Session, scan_id: str, include_fp: bool = False, light: bool | None = False) -> dict:
+    """Everything known about one scan. `light` (dashboard views) leaves out archive URLs and caps endpoints, so a
+    target with hundreds of thousands of historical URLs still builds in seconds; counts stay exact.
+    light=None decides by size: full below AUTO_LIGHT_ENDPOINTS endpoints, light above."""
     scan = s.get(Scan, scan_id)
     if scan is None:
         raise KeyError(f"scan {scan_id} not found")
+    if light is None:
+        from sqlalchemy import func
+
+        n = s.execute(select(func.count()).select_from(Asset).where(Asset.target_id == scan.target_id,
+                                                                   Asset.type == "endpoint")).scalar() or 0
+        light = n > AUTO_LIGHT_ENDPOINTS
     target = s.get(Target, scan.target_id)
-    q = select(Asset).where(Asset.target_id == scan.target_id, Asset.status == "active")
-    if not include_fp:
-        q = q.where(Asset.false_positive.is_(False))
-    assets = list(s.execute(q).scalars())
+    q = _active(select(Asset).where(Asset.target_id == scan.target_id), include_fp)
+    ep_summary = None
+    if light:
+        d = s.bind.dialect.name
+        types = [t for (t,) in s.execute(select(Asset.type).where(Asset.target_id == scan.target_id).distinct()) if t != "endpoint"]
+        assets = list(s.execute(q.where(Asset.type.in_(types))).scalars()) if types else []
+        from ..db.fastpath import jfield
+
+        # API-ish and document endpoints (what the dashboard summarises); every endpoint is paged via /endpoints
+        # no ORDER BY here: it would make SQLite walk the URL index and parse every row's JSON (minutes on 1M rows)
+        api_eps = list(s.execute(q.where(Asset.type == "endpoint", jfield(d, Asset.attributes, "kind").in_([*API_KINDS, "document"]))
+                                 .limit(LIGHT_ENDPOINT_CAP)).scalars())
+        assets += sorted(api_eps, key=lambda a: a.key)
+        ep_summary = endpoint_summary(s, scan.target_id, include_fp)
+    else:
+        assets = list(s.execute(q).scalars())
     by_type: dict[str, list[Asset]] = defaultdict(list)
     for a in assets:
         by_type[a.type].append(a)
     idx = {a.id: a for a in assets}
-    rels = list(s.execute(select(Relation).where(Relation.target_id == scan.target_id)).scalars())
+    rq = select(Relation).where(Relation.target_id == scan.target_id)
+    if light:
+        rtypes = [t for (t,) in s.execute(select(Relation.type).where(Relation.target_id == scan.target_id).distinct())
+                  if t not in BULK_RELATIONS]
+        rq = rq.where(Relation.type.in_(rtypes)) if rtypes else None
+    rels = list(s.execute(rq).scalars()) if rq is not None else []
     out_edges, in_edges = defaultdict(list), defaultdict(list)
     for r in rels:
         out_edges[r.src_id].append(r)
@@ -100,7 +156,7 @@ def build_report_data(s: Session, scan_id: str, include_fp: bool = False) -> dic
                 "methods_observed": (e.attributes or {}).get("methods_observed", []), "api_version": (e.attributes or {}).get("api_version"),
                 "status": (e.attributes or {}).get("status"), "discovered_via": (e.attributes or {}).get("discovered_via", []),
                 "host": (e.attributes or {}).get("host")} for e in endpoints]
-    api_kinds = {"api", "graphql", "openapi", "websocket", "api_documentation", "oidc_metadata"}
+    api_kinds = set(API_KINDS)
     api_hosts = sorted({e["host"] for e in ep_rows if e["kind"] in api_kinds and e["host"]} |
                        {a["attributes"].get("host") for a in app_rows if a["is_api"]})
     services = [{**_a(sv), **{k: (sv.attributes or {}).get(k) for k in ("ip", "port", "proto", "service", "product", "version", "banner", "hosts")}}
@@ -108,6 +164,11 @@ def build_report_data(s: Session, scan_id: str, include_fp: bool = False) -> dic
     certs = [{**_a(c), **{k: (c.attributes or {}).get(k) for k in ("subject_cn", "issuer_cn", "sans", "not_before", "not_after",
                                                                      "days_remaining", "self_signed", "trusted", "key_type", "key_bits")},
               "presented_by": [x.key for x in linked(c.id, "presents", "in")]} for c in by_type["certificate"]]
+    missing = [sc.asset_id for sc in scores if sc.asset_id not in idx]
+    if light and missing:  # a scored asset that the light build left out (e.g. an archive URL)
+        for i in range(0, len(missing), 500):
+            for a in s.execute(select(Asset).where(Asset.id.in_(missing[i:i + 500]))).scalars():
+                idx[a.id] = a
     priorities = [{"asset": _a(idx[sc.asset_id]), "score": sc.score, "tier": sc.tier, "factors": sc.factors}
                   for sc in scores if sc.asset_id in idx]
     completed = [r for r in runs if r.status == "completed"]
@@ -127,9 +188,12 @@ def build_report_data(s: Session, scan_id: str, include_fp: bool = False) -> dic
         gaps.append({"module": "http_probe", "status": "coverage", "reason": f"Resolved hosts with no web application on probed ports: {', '.join(no_web[:15])}"})
     ev_ids = sorted({x for x in [a.attributes.get("_last_evidence") for a in assets if a.attributes] if x} |
                     {c.evidence_id for c in changes if c.evidence_id})
-    evidence = {e.id: {"id": e.id, "kind": e.kind, "summary": e.summary, "module": e.module, "sha256": e.sha256,
-                       "path": e.path, "created_at": iso(e.created_at)}
-                for e in s.execute(select(Evidence).where(Evidence.id.in_(ev_ids))).scalars()} if ev_ids else {}
+    evidence = {}
+    cols = (Evidence.id, Evidence.kind, Evidence.summary, Evidence.module, Evidence.sha256, Evidence.path, Evidence.created_at)
+    for i in range(0, len(ev_ids), 900):  # metadata only (never the content), in batches below SQL parameter limits
+        for e in s.execute(select(*cols).where(Evidence.id.in_(ev_ids[i:i + 900]))).all():
+            evidence[e.id] = {"id": e.id, "kind": e.kind, "summary": e.summary, "module": e.module, "sha256": e.sha256,
+                              "path": e.path, "created_at": iso(e.created_at)}
     sev_counts = Counter((f.attributes or {}).get("severity", "info") for f in findings)
     overview = {
         "domains": len(by_type["domain"]),
@@ -142,8 +206,8 @@ def build_report_data(s: Session, scan_id: str, include_fp: bool = False) -> dic
         "asns": len(by_type["asn"]),
         "open_ports": len(services),
         "technologies": len(by_type["technology"]),
-        "api_endpoints": sum(1 for e in ep_rows if e["kind"] in api_kinds),
-        "endpoints": len(ep_rows),
+        "api_endpoints": ep_summary["api"] if ep_summary else sum(1 for e in ep_rows if e["kind"] in api_kinds),
+        "endpoints": ep_summary["total"] if ep_summary else len(ep_rows),
         "javascript_files": len(by_type["js_file"]),
         "certificates": len(certs),
         "cloud_references": len(by_type["cloud_resource"]),
@@ -176,6 +240,10 @@ def build_report_data(s: Session, scan_id: str, include_fp: bool = False) -> dic
         "web_apps": app_rows,
         "technologies": dict(sorted(tech_groups.items())),
         "endpoints": ep_rows,
+        "endpoint_summary": ep_summary or {"total": len(ep_rows), "historical": sum(1 for e in ep_rows if e["attributes"].get("historical")),
+                                           "by_kind": dict(Counter(e["kind"] or "unknown" for e in ep_rows).most_common()),
+                                           "api": sum(1 for e in ep_rows if e["kind"] in api_kinds)},
+        "light": light,
         "api_hosts": api_hosts,
         "js_files": [{**_a(j), **{k: (j.attributes or {}).get(k) for k in ("size", "endpoints_found", "third_parties", "libraries", "sourcemap", "secret_patterns")}}
                      for j in by_type["js_file"]],

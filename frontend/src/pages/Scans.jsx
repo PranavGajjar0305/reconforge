@@ -1,15 +1,17 @@
-import { Fragment, useState } from "react";
+import { Fragment, useCallback, useState } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
 import Icon from "../components/icons";
 import { useApp } from "../App";
 import { api, withToken } from "../api";
+import LogView from "../components/LogView";
 import { Loading, Pills, Section, useLoad, Pending } from "../components/ui";
 
 const STATUS = { completed: "text-emerald-300", partial: "text-amber-300", failed: "text-[#ff8da0]", running: "text-amber-300", skipped: "text-slate-500", cancelled: "text-slate-400" };
 
 function ScanDetail({ scan }) {
   const reports = useLoad(() => api.scanReports(scan.id), [scan.id]);
-  const [log, setLog] = useState(null);
+  const [log, setLog] = useState(false);
+  const fetchLog = useCallback((start, limit) => api.logLines(scan.id, { start, limit }), [scan.id]);
   return (
     <div className="space-y-3 border-l-2 border-indigo-400/50 bg-slate-950/60 p-3">
       <div className="grid gap-3 md:grid-cols-3 text-xs">
@@ -42,13 +44,14 @@ function ScanDetail({ scan }) {
         </tbody>
       </table>
       <div className="flex flex-wrap gap-2">
-        <button className="btn" onClick={async () => setLog(log ? null : await api.scanLog(scan.id))}>{log ? "Hide execution log" : "Show execution log"}</button>
+        <button className="btn" onClick={() => setLog(!log)}>{log ? "Hide execution log" : "Show execution log"}</button>
         <a className="btn" href={withToken(`/api/scans/${scan.id}/log?download=1`)} download><Icon name="download" size={13} /> Download execution log</a>
         <a className="btn" href={api.modulesZipUrl(scan.id)} download><Icon name="zip" size={13} /> All module output (.zip)</a>
         <Link className="btn" to={`/output/${scan.id}`}><Icon name="terminal" size={13} /> Tool output</Link>
         {scan.status === "running" && <Link className="btn-primary" to={`/live/${scan.id}`}><Icon name="live" size={13} /> Watch live</Link>}
       </div>
-      {log && <pre className="term max-h-96 whitespace-pre-wrap break-all text-[11px]">{log}</pre>}
+      {log && <LogView fetchWindow={fetchLog} resetKey={scan.id} live={scan.status === "running"} height="24rem"
+                       format={(l) => l.replace(/^\d{4}-\d\d-\d\d /, "")} empty="The execution log is empty." />}
     </div>
   );
 }

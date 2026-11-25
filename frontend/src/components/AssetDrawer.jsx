@@ -72,6 +72,12 @@ export default function AssetDrawer({ id, onClose, onNavigate }) {
                 </tbody>
               </table>
             )}
+            {tab === "related" && (data.related_counts || []).filter((c) => c.total > c.shown).map((c) => (
+              <div key={c.direction + c.relation} className="mt-2 text-[12px] text-amber-200/80">
+                Showing {c.shown.toLocaleString()} of {c.total.toLocaleString()} “{c.relation}” links
+                {c.relation === "historical_url" ? " — browse all of them on the Endpoints page (Origin: Archive, Host filter)." : "."}
+              </div>
+            ))}
             {tab === "history" && (
               <div className="space-y-3">
                 <div className="text-xs text-slate-400">State per scan ({data.history.states.length})</div>

@@ -1,10 +1,17 @@
 import { useApp } from "../App";
 import { api } from "../api";
-import { EvidenceLink, Loading, Pills, Section, Sev, useLoad, Pending } from "../components/ui";
+import { EvidenceLink, Loading, Pills, Section, Sev, useLoad, Pending, useStep } from "../components/ui";
 
 export default function Infrastructure() {
   const { target, openAsset } = useApp();
   const { data: d, loading, error, reload } = useLoad(() => api.reportData(target), [target]);
+  // big scans have thousands of these; render them in steps
+  const [profiles, moreProfiles] = useStep(d?.http_profiles, 100);
+  const [byIp, moreByIp] = useStep(d ? Object.entries(d.vhost_inventory.applications_by_ip) : null, 100);
+  const [intel, moreIntel] = useStep(d?.ip_intelligence, 50);
+  const [params, moreParams] = useStep(d?.parameter_inventory, 100);
+  const [docs, moreDocs] = useStep(d?.documents, 100);
+  const [dnsObs, moreDnsObs] = useStep(d ? [...d.email_findings, ...d.findings.filter((f) => f.attributes.category === "dns")] : null, 100);
   if (loading || error) return <Pending loading={loading} error={error} reload={reload} />;
   return (
     <div className="space-y-4">
@@ -22,13 +29,13 @@ export default function Infrastructure() {
           </div>
         ))}
         <div className="mt-3 text-xs text-slate-400">Email & DNS observations</div>
-        {[...d.email_findings, ...d.findings.filter((f) => f.attributes.category === "dns")].map((f) => (
+        {dnsObs.map((f) => (
           <div key={f.id} className="cursor-pointer text-sm" onClick={() => openAsset(f.id)}><Sev s={f.attributes.severity} /> {f.attributes.title} <span className="text-slate-500">{f.attributes.subject}</span></div>
-        ))}
+        ))}{moreDnsObs}
       </Section>
       <div className="grid gap-4 lg:grid-cols-2">
         <Section title="Virtual hosts & application grouping">
-          {Object.entries(d.vhost_inventory.applications_by_ip).map(([ip, apps]) => <div key={ip} className="mb-2 text-xs"><span className="mono text-slate-200">{ip}</span> <Pills items={apps} /></div>)}
+          {byIp.map(([ip, apps]) => <div key={ip} className="mb-2 text-xs"><span className="mono text-slate-200">{ip}</span> <Pills items={apps} /></div>)}{moreByIp}
           <div className="text-xs text-slate-500">Shared certificates</div>
           {Object.entries(d.vhost_inventory.shared_certificates).map(([c, apps]) => <div key={c} className="text-xs">{c}: <Pills items={apps} /></div>)}
           <div className="mt-2 text-xs text-slate-500">Hosts answering only with the server default vhost</div><Pills items={d.vhost_inventory.default_vhost_only_hosts} />
@@ -58,26 +65,26 @@ export default function Infrastructure() {
       </Section>
       <Section title="HTTP/HTTPS intelligence">
         <table className="tbl"><thead><tr><th>Application</th><th>Redirect chain</th><th>HTTP/2</th><th>HTTP/3 adv.</th><th>Compression</th><th>HSTS</th><th>CSP</th><th>Default page</th></tr></thead><tbody>
-          {d.http_profiles.map((p) => (
+          {profiles.map((p) => (
             <tr key={p.app}><td className="mono">{p.app}</td><td className="text-[11px]">{(p.redirect_chain || []).map((c, i) => <div key={i}>{c.status ?? "—"} {c.url}</div>)}</td>
               <td>{String(p.http2 ?? "n/a")}</td><td>{String(p.http3_advertised)}</td><td>{p.compression || "—"}</td>
               <td>{p.hsts ? `${p.hsts.max_age}s${p.hsts.include_subdomains ? " +sub" : ""}` : "none"}</td>
               <td className="text-[11px]">{p.csp ? p.csp.directives.join(" ") : "none"}</td><td>{p.default_page || ""}</td></tr>
           ))}
-        </tbody></table>
+        </tbody></table>{moreProfiles}
       </Section>
       <div className="grid gap-4 lg:grid-cols-2">
         <Section title="Endpoint categories & parameter inventory">
           <Pills items={Object.entries(d.endpoint_categories).map(([k, v]) => `${k}: ${v}`)} />
           <div className="mt-1 text-[11px] text-slate-500">Categories describe function, not weakness.</div>
           <table className="tbl mt-2"><thead><tr><th>Parameter</th><th>Endpoints</th><th>Examples</th></tr></thead><tbody>
-            {d.parameter_inventory.map((p) => <tr key={p.name}><td className="mono">{p.name}</td><td>{p.endpoints}</td><td className="mono text-[11px]">{p.examples.join(", ")}</td></tr>)}
-          </tbody></table>
+            {params.map((p) => <tr key={p.name}><td className="mono">{p.name}</td><td>{p.endpoints}</td><td className="mono text-[11px]">{p.examples.join(", ")}</td></tr>)}
+          </tbody></table>{moreParams}
         </Section>
         <Section title="Exposure intelligence, documents & secrets">
-          {d.ip_intelligence.map((x) => <div key={x.ip} className="mb-2 text-xs"><span className="mono text-slate-200">{x.ip}</span><pre className="mono whitespace-pre-wrap text-slate-400">{JSON.stringify(Object.fromEntries(Object.entries(x).filter(([k]) => k !== "ip")), null, 1).slice(0, 800)}</pre></div>)}
+          {intel.map((x) => <div key={x.ip} className="mb-2 text-xs"><span className="mono text-slate-200">{x.ip}</span><pre className="mono whitespace-pre-wrap text-slate-400">{JSON.stringify(Object.fromEntries(Object.entries(x).filter(([k]) => k !== "ip")), null, 1).slice(0, 800)}</pre></div>)}{moreIntel}
           <div className="text-xs text-slate-500">Public documents (HEAD metadata only)</div>
-          {d.documents.map((e) => <div key={e.id} className="mono text-[11px]">{e.key} · {e.attributes.content_type} · {e.attributes.size} B</div>)}
+          {docs.map((e) => <div key={e.id} className="mono text-[11px]">{e.key} · {e.attributes.content_type} · {e.attributes.size} B</div>)}{moreDocs}
           <div className="mt-2 text-xs text-slate-500">Potential secret exposure (redacted, never used or validated)</div>
           {d.secret_exposures.map((x, i) => <div key={i} className="text-[11px]"><span className="mono">{x.location}</span> · {x.pattern} · <EvidenceLink id={x.evidence} /></div>)}
         </Section>

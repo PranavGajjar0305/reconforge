@@ -27,6 +27,9 @@ def get_engine(url: str) -> Engine:
                 cur.execute("PRAGMA foreign_keys=ON")
                 cur.close()
         Base.metadata.create_all(engine)
+        from .fastpath import ensure_indexes
+
+        ensure_indexes(engine)
         _engines[url] = engine
     return _engines[url]
 
